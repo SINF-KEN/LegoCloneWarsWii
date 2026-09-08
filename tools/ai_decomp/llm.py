@@ -48,7 +48,7 @@ REQUEST_LOG = os.path.join(ATTEMPTS_DIR, "llm", "requests.jsonl")
 PROMPTS_DIR = os.path.join(HERE, "prompts")
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 600  # reasoning models can take minutes; LLM_TIMEOUT overrides
 
 PROMPT_TEMPLATE = "decompile_function"
 
@@ -100,7 +100,7 @@ class LLMClient:
     """Minimal OpenAI-compatible chat-completions client."""
 
     def __init__(self, api_key=None, base_url=None, model=None,
-                 timeout=DEFAULT_TIMEOUT, log_path=REQUEST_LOG):
+                 timeout=None, log_path=REQUEST_LOG):
         self.api_key = api_key if api_key is not None \
             else os.environ.get("LLM_API_KEY")
         self.base_url = (base_url if base_url is not None
@@ -108,7 +108,8 @@ class LLMClient:
                          or DEFAULT_BASE_URL).rstrip("/")
         self.model = model if model is not None \
             else os.environ.get("LLM_MODEL")
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None \
+            else int(os.environ.get("LLM_TIMEOUT") or DEFAULT_TIMEOUT)
         self.log_path = log_path
 
         missing = [name for name, value in (
