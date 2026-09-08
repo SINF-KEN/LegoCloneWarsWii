@@ -65,6 +65,7 @@ import editor as editor_mod  # noqa: E402
 import idioms as idioms_mod  # noqa: E402
 import llm as llm_mod  # noqa: E402
 import mismatch as mismatch_mod  # noqa: E402
+import type_analysis as type_analysis_mod  # noqa: E402
 import objdiff as objdiff_mod  # noqa: E402
 from worktree import WorktreeError, WorktreeManager  # noqa: E402
 
@@ -477,6 +478,14 @@ class Orchestrator:
             limit=idioms_mod.DEFAULT_RETRIEVE_LIMIT)
         ctx["idioms"] = relevant_idioms
         idioms_block = idioms_mod.render_idioms_markdown(relevant_idioms)
+
+        # 5.4: conservative type/vtable evidence from the target's own
+        # assembly (evidence only — no types are invented here)
+        type_patterns = type_analysis_mod.analyze_instructions(
+            ctx.get("assembly") or [])
+        ctx["type_evidence"] = type_patterns
+        type_block = type_analysis_mod.render_type_evidence_markdown(
+            type_patterns)
         self._write(attempt, "context.json", json.dumps(ctx, indent=2))
         self.unit_source_path = ctx["source"]["path"]
 
@@ -523,8 +532,9 @@ class Orchestrator:
         prompt = llm_mod.render_prompt(template, context_mod
                                        .render_markdown(ctx))
         prompt = prompt + feedback_block
-        if idioms_block:
-            prompt += "\n\n" + idioms_block + "\n"
+        for block in (idioms_block, type_block):
+            if block:
+                prompt += "\n\n" + block + "\n"
         self._write(attempt, "prompt.txt", prompt)
 
         # 3. LLM
@@ -757,6 +767,20 @@ class Orchestrator:
                     % (best_pct, json.dumps(result["objdiff"])))
             return result
         finally:
+            # 5.4: record type/vtable evidence only from real
+            # compiled+objdiff outcomes (never dry-runs, failed builds
+            # or global regressions)
+            if compiled_ok and not self.dry_run and not regressed \
+                    and type_patterns:
+                try:
+                    type_analysis_mod.db_record(
+                        self.conn, type_patterns,
+                        function_address=self.address,
+                        function_name=self.symbol,
+                        matched=(now_pct == 100.0))
+                except Exception as exc:  # never break the loop
+                    self.log("type evidence recording failed: %s" % exc)
+
             # 5.3: learn compiler idioms from real compiled+objdiff
             # outcomes only (never from dry-runs or failed builds)
             if compiled_ok and not self.dry_run and result.get("patch"):

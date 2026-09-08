@@ -54,6 +54,16 @@ with their objdiff outcomes. Treat them as evidence for what MWCC
 tends to emit — never as guarantees or rules. Always verify a proposed
 construct against the target assembly and, ultimately, objdiff.
 
+## Type / struct / vtable evidence
+
+If the context contains a "Type / object evidence" section, use it to
+explain compiler-generated access patterns: field offsets and widths,
+vtable pointer locations, virtual slot indices, and register roles.
+Type evidence may explain why MWCC emits certain loads and calls, but
+it is not authoritative. Prefer a simpler source construct when the
+inferred type is uncertain; if evidence conflicts, state the
+uncertainty instead of forcing a type.
+
 ## Hard prohibitions
 
 - Do not invent APIs or symbols not present in the context.

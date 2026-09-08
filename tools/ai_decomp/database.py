@@ -195,6 +195,30 @@ CREATE INDEX IF NOT EXISTS idx_idiom_obs_idiom
     ON idiom_observations(idiom_id);
 CREATE INDEX IF NOT EXISTS idx_idiom_obs_function
     ON idiom_observations(function_address);
+
+CREATE TABLE IF NOT EXISTS type_evidence (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                TEXT NOT NULL,
+    function_address    TEXT,
+    function_name       TEXT,
+    register            TEXT,
+    offset              INTEGER,
+    access              TEXT,
+    width               INTEGER,
+    slot_offset         INTEGER,
+    slot_index          INTEGER,
+    call_site           TEXT,
+    instruction_address TEXT,
+    evidence_level      TEXT NOT NULL DEFAULT 'observed',
+    matched_count       INTEGER NOT NULL DEFAULT 0,
+    observation_count   INTEGER NOT NULL DEFAULT 1,
+    last_seen           TEXT,
+    UNIQUE (kind, function_address, register, offset, access, width,
+            slot_offset, call_site, instruction_address)
+);
+CREATE INDEX IF NOT EXISTS idx_type_evidence_function
+    ON type_evidence(function_address);
+CREATE INDEX IF NOT EXISTS idx_type_evidence_kind ON type_evidence(kind);
 """
 
 
@@ -511,6 +535,63 @@ def functions_with_indirect_calls(conn):
     return conn.execute(
         "SELECT COUNT(DISTINCT function_address) AS n "
         "FROM indirect_calls").fetchone()["n"]
+
+
+def record_type_evidence(conn, records, function_address=None,
+                         function_name=None, matched=False):
+    """Persist conservative type/vtable/field evidence records.
+
+    Idempotent: an identical evidence record (same kind, function,
+    register, offsets, access, width, sites) is not duplicated — only
+    its last_seen is refreshed and its matched_count incremented when
+    the owning function is objdiff-verified at 100.0.
+    """
+    import datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    written = 0
+    for rec in records:
+        row = conn.execute(
+            """SELECT id, observation_count, matched_count
+               FROM type_evidence
+               WHERE kind = ? AND function_address IS ?
+                 AND register IS ? AND offset IS ? AND access IS ?
+                 AND width IS ? AND slot_offset IS ? AND slot_index IS ?
+                 AND call_site IS ? AND instruction_address IS ?""",
+            (rec.get("kind"), function_address, rec.get("register"),
+             rec.get("offset"), rec.get("access"), rec.get("width"),
+             rec.get("slot_offset"), rec.get("slot_index"),
+             rec.get("call_site"), rec.get("instruction_address"))
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """INSERT INTO type_evidence
+                       (kind, function_address, function_name, register,
+                        offset, access, width, slot_offset, slot_index,
+                        call_site, instruction_address, evidence_level,
+                        matched_count, observation_count, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                (rec.get("kind"), function_address, function_name,
+                 rec.get("register"), rec.get("offset"),
+                 rec.get("access"), rec.get("width"),
+                 rec.get("slot_offset"), rec.get("slot_index"),
+                 rec.get("call_site"), rec.get("instruction_address"),
+                 "matched" if matched else "observed",
+                 1 if matched else 0, now))
+        else:
+            matched_count = row["matched_count"] + (1 if matched else 0)
+            conn.execute(
+                """UPDATE type_evidence
+                   SET last_seen = ?, observation_count = ?,
+                       matched_count = ?,
+                       evidence_level = ?
+                   WHERE id = ?""",
+                (now, row["observation_count"] + 1, matched_count,
+                 "matched" if matched_count else rec.get(
+                     "evidence_level", "observed"),
+                 row["id"]))
+        written += 1
+    conn.commit()
+    return written
 
 
 def effective_idiom_level(observation_count, matched_count):

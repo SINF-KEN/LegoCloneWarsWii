@@ -162,7 +162,8 @@ def find_headers(name, max_headers=MAX_HEADERS,
 def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
                   depth=DEFAULT_DEPTH, run_m2c=True,
                   output_dir=OUTPUT_DIR, src_root=SRC_DIR,
-                  include_dir=INCLUDE_DIR, mismatch=None, idioms=None):
+                  include_dir=INCLUDE_DIR, mismatch=None, idioms=None,
+                  type_evidence=None):
     """Assemble the context package for one function."""
     address = db.normalize_address(address)
     own_conn = conn is None
@@ -336,6 +337,7 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
         "headers": headers,
         "mismatch": mismatch,
         "idioms": idioms or [],
+        "type_evidence": type_evidence or [],
         "m2c": None,
         "match_info": match_info,
         "evidence": evidence,
@@ -504,6 +506,13 @@ def render_markdown(ctx):
     if ctx.get("idioms"):
         lines.append("")
         lines.append(_render_idioms_lines(ctx["idioms"]))
+
+    if ctx.get("type_evidence"):
+        import type_analysis
+        lines.append("")
+        lines.append("## Type / object evidence")
+        lines.append(type_analysis.render_type_evidence_markdown(
+            ctx["type_evidence"]))
 
     if ctx["m2c"]:
         lines.append("")

@@ -35,6 +35,17 @@ machine code — a 100% binary match as judged by objdiff.**
    supported by the evidence (observed access widths, offsets, callers,
    and callees).
 
+## Type / struct / vtable evidence
+
+A "Type / object evidence" section, when present, shows conservatively
+recovered evidence: field offsets and widths, likely vtable pointer
+locations and virtual slot indices, register roles, and table lookups.
+Use it to choose structurally plausible source constructs — but it is
+inferred evidence, not certainty. Prefer the simplest source construct
+consistent with the assembly; preserve the ABI and calling convention;
+the assembly remains the final behavioral authority. If evidence
+conflicts, explain the uncertainty rather than forcing a type.
+
 ## Hard prohibitions
 
 - Do not invent APIs, functions, or symbols that are not in the context.
