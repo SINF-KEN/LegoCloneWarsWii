@@ -299,6 +299,11 @@ class Orchestrator:
 
     def run_attempt(self, attempt, feedback):
         record_dir = self.attempt_dir(attempt)
+        if os.path.isdir(record_dir):
+            # re-running the same attempt number must never mix old
+            # artifacts (e.g. a stale build.log from a dry-run) with
+            # this attempt's records
+            shutil.rmtree(record_dir)
         os.makedirs(record_dir, exist_ok=True)
         result = {"attempt": attempt, "classification": "unknown"}
 
