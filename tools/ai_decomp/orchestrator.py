@@ -267,11 +267,11 @@ class Orchestrator:
             self._write(attempt, "result.json",
                         json.dumps(result, indent=2, default=str))
             results.append(result)
+            final = result
             if result.get("fatal"):
                 self.log("fatal error, aborting the loop: %s"
                          % result.get("error"))
                 break
-            final = result
             if result["classification"] in ("ok", "already_matched"):
                 break
             feedback = result.get("feedback")
@@ -329,6 +329,7 @@ class Orchestrator:
         if not getattr(response, "ok", True) or response.error:
             result["classification"] = "llm_error"
             result["error"] = getattr(response, "error", "llm failed")
+            result["fatal"] = getattr(response, "fatal", False)
             return result
         try:
             structured = llm_mod.parse_structured(response.response)
