@@ -9,6 +9,20 @@ fi
 
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 
+# one-time data catalog (sections + defined data + strings) used by the
+# global/data reference analysis; regenerate with export_data_catalog.sh
+# after re-running Ghidra auto analysis
+if [[ ! -s "$HOME/Decomp/LegoCloneWarsWii/tools/ghidra/output/data_catalog.json" ]]; then
+    echo "data catalog missing; generating (one-time)..." >&2
+    "$HOME/Decomp/tools/ghidra/support/analyzeHeadless" \
+        "$HOME/Decomp/ghidra-projects" \
+        LegoCloneWarsWii \
+        -process main.dol \
+        -noanalysis \
+        -postScript ExportDataCatalog.java \
+        -scriptPath "$HOME/Decomp/LegoCloneWarsWii/tools/ghidra"
+fi
+
 "$HOME/Decomp/tools/ghidra/support/analyzeHeadless" \
     "$HOME/Decomp/ghidra-projects" \
     LegoCloneWarsWii \

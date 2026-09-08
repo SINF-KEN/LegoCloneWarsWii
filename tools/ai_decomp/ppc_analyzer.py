@@ -148,6 +148,10 @@ class Analyzer:
         }
         # rolling window for virtual-call pattern matching
         self.recent = []
+        # register -> index into address_constructions of an unfinished
+        # (high-half only) address construction, cleared when the register
+        # is overwritten or used as a source before the sequence completes
+        self.pending_construction = {}
 
     def set_reg(self, reg, value, addr):
         self.regs[reg] = value
@@ -161,13 +165,23 @@ class Analyzer:
                 }
             )
             if value.kind == "const" and value.value >= 0x80000000:
-                self.derived["address_constructions"].append(
-                    {
-                        "address": "%08x" % addr,
-                        "register": reg,
-                        "value": hex(value.value),
-                    }
-                )
+                entry = {
+                    "address": "%08x" % addr,
+                    "register": reg,
+                    "value": hex(value.value),
+                }
+                constructions = self.derived["address_constructions"]
+                pending = self.pending_construction.get(reg)
+                if pending is not None and pending < len(constructions):
+                    # completion of a lis/addi (or addis/ori) sequence:
+                    # keep the start address and the completed value only
+                    entry["address"] = constructions[pending]["address"]
+                    constructions[pending] = entry
+                else:
+                    constructions.append(entry)
+                    self.pending_construction[reg] = len(constructions) - 1
+            else:
+                self.pending_construction.pop(reg, None)
 
     def get_reg(self, reg):
         v = self.regs.get(reg)
@@ -345,6 +359,10 @@ class Analyzer:
         }
         if dst_reg:
             entry["register"] = dst_reg
+        if base_reg:
+            entry["base_register"] = base_reg
+        if index_reg:
+            entry["index_register"] = index_reg
         if index_val is None:
             if base_val.is_const():
                 entry["effective_address"] = hex(base_val.value)
@@ -358,7 +376,6 @@ class Analyzer:
                 entry.update({
                     "table_base": hex(base_val.value),
                     "index": str(index_val),
-                    "index_register": index_reg,
                 })
                 if size:
                     entry["element_size"] = size
@@ -482,6 +499,34 @@ class Analyzer:
             "pattern": "object->vtable[%d]()" % (mem2[0] // 4),
         }
 
+    # mnemonics whose first operand is the destination GPR; for everything
+    # else all register operands are treated as sources
+    DEST_WRITES = {
+        "add", "add.", "addc", "addc.", "adde", "adde.", "addi", "addic",
+        "addic.", "addis", "addme", "addme.", "addze", "addze.",
+        "subf", "subf.", "subfc", "subfc.", "subfe", "subfe.", "subfic",
+        "subfme", "subfme.", "subfze", "subfze.",
+        "mullw", "mullw.", "mulli", "divw", "divw.", "divwu", "divwu.",
+        "or", "or.", "ori", "oris", "xor", "xor.", "xori", "xoris",
+        "and", "and.", "andi.", "andis.", "nor", "nor.", "nand", "nand.",
+        "eqv", "orc", "slw", "slw.", "srw", "srw.", "sraw", "sraw.",
+        "srawi", "srawi.", "rlwinm", "rlwinm.", "rlwimi", "rlwimi.",
+        "rlwnm", "mr", "li", "lis", "la", "neg", "neg.", "extsb", "extsb.",
+        "extsh", "extsh.", "cntlzw", "cntlzw.",
+        "lwz", "lwzu", "lbz", "lbzu", "lhz", "lhzu", "lha", "lhau",
+        "lfs", "lfsu", "lfd", "lfdu", "lwzx", "lwzux", "lbzx", "lhzx",
+        "lhax", "lfsx", "lfdx",
+    }
+
+    @staticmethod
+    def _source_regs(ins):
+        regs = set(re.findall(r"\br\d+\b", ins.operand_text))
+        if ins.operands and ins.mnemonic in Analyzer.DEST_WRITES:
+            m = re.match(r"(r\d+)", ins.operands[0])
+            if m:
+                regs.discard(m.group(1))
+        return regs
+
     # ---- driver ----
 
     def analyze(self, instructions):
@@ -490,14 +535,14 @@ class Analyzer:
                 ins = Instruction(line)
             except ValueError:
                 continue
-            before = ins.mnemonic
             self.eval_alu(ins)
             self.eval_memory(ins)
             self.eval_control(ins)
+            for reg in self._source_regs(ins):
+                self.pending_construction.pop(reg, None)
             self.recent.append(ins)
             if len(self.recent) > 8:
                 self.recent.pop(0)
-            _ = before
         return self.derived
 
 
@@ -523,6 +568,17 @@ def main():
     if args.write:
         out_path = args.function_json.replace(".json", "_analyzed.json")
         data["derived"] = derived
+
+        # join derived facts with Ghidra's data model (#11/#12); degrades
+        # gracefully to empty lists when the catalog has not been exported
+        try:
+            import data_analysis
+            data_analysis.enrich(data, derived)
+        except ImportError:
+            data["global_references"] = []
+            data["string_references"] = []
+            data["data_catalog_available"] = False
+
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
         print("Wrote %s" % out_path, file=sys.stderr)
@@ -542,6 +598,11 @@ def main():
             extra = c.get("virtual_call")
             print("    %s -> %s%s" % (c["address"], c["target"],
                                      (" " + str(extra["pattern"]) if extra else "")))
+        for key in ("global_references", "string_references"):
+            if key in data:
+                print("  %s: %d" % (key, len(data[key])) +
+                      ("" if data.get("data_catalog_available", True)
+                       else "  (data catalog not exported yet)"))
 
 
 if __name__ == "__main__":

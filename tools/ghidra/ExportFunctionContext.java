@@ -7,6 +7,8 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressFormatException;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.FunctionManager;
@@ -31,9 +33,14 @@ public class ExportFunctionContext extends GhidraScript {
 
     private Function findFunction(FunctionManager manager, String addressText)
             throws Exception {
-        Address address = currentProgram.getAddressFactory()
-                .getDefaultAddressSpace()
-                .getAddress(addressText);
+        Address address;
+        try {
+            address = currentProgram.getAddressFactory()
+                    .getDefaultAddressSpace()
+                    .getAddress(addressText);
+        } catch (AddressFormatException e) {
+            return null;
+        }
 
         if (address == null) {
             return null;
@@ -166,6 +173,7 @@ public class ExportFunctionContext extends GhidraScript {
         List<String> dataReferences = new ArrayList<>();
         List<String> strings = new ArrayList<>();
         List<String> instructions = new ArrayList<>();
+        List<String> dataRefDetails = new ArrayList<>();
 
         InstructionIterator instructionIterator =
                 listing.getInstructions(function.getBody(), true);
@@ -182,6 +190,7 @@ public class ExportFunctionContext extends GhidraScript {
 
             for (Reference ref : refs) {
                 Address target = ref.getToAddress();
+                String refType = ref.getReferenceType().getName();
 
                 Data data = listing.getDefinedDataAt(target);
 
@@ -206,6 +215,25 @@ public class ExportFunctionContext extends GhidraScript {
                         !strings.contains(entry)) {
                         strings.add(entry);
                     }
+                }
+
+                boolean interesting = refType.contains("READ")
+                        || refType.contains("WRITE")
+                        || refType.startsWith("DATA");
+
+                if (interesting) {
+                    dataRefDetails.add(
+                        "{\"instruction_address\": \"" +
+                        instruction.getAddress().toString() +
+                        "\", \"instruction\": \"" +
+                        jsonEscape(instruction.toString()) +
+                        "\", \"target\": \"" +
+                        target.toString() +
+                        "\", \"reference_type\": \"" +
+                        jsonEscape(refType) +
+                        "\", \"defined\": " +
+                        (data != null) +
+                        "}");
                 }
             }
         }
@@ -281,24 +309,10 @@ public class ExportFunctionContext extends GhidraScript {
             }
             out.write("  ],\n");
 
-            out.write("  \"data_references\": [\n");
-            for (int i = 0; i < dataReferences.size(); i++) {
-                out.write("    \"" +
-                        jsonEscape(dataReferences.get(i)) +
-                        "\"");
-                if (i + 1 < dataReferences.size()) {
-                    out.write(",");
-                }
-                out.write("\n");
-            }
-            out.write("  ],\n");
-
-            out.write("  \"strings\": [\n");
-            for (int i = 0; i < strings.size(); i++) {
-                out.write("    \"" +
-                        jsonEscape(strings.get(i)) +
-                        "\"");
-                if (i + 1 < strings.size()) {
+            out.write("  \"data_ref_details\": [\n");
+            for (int i = 0; i < dataRefDetails.size(); i++) {
+                out.write("    " + dataRefDetails.get(i));
+                if (i + 1 < dataRefDetails.size()) {
                     out.write(",");
                 }
                 out.write("\n");
