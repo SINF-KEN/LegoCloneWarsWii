@@ -39,13 +39,25 @@ Respond with ONE JSON object (a fenced ```json block is fine):
 {
   "analysis": "the most likely cause of the mismatch, tied to specific differing instructions",
   "hypotheses": ["candidate causes ranked by likelihood, with evidence"],
-  "proposed_source": "revised source for the function (complete file content for the function)",
-  "source_changes": [{"file": "path", "change": "precise edit description"}],
+  "proposed_source": "revised source for the function",
+  "source_changes": [
+    {
+      "path": "src/<unit-file>.cpp",
+      "operation": "replace",
+      "old_text": "the exact current text being replaced (verbatim, unique in the file)",
+      "new_text": "the replacement text"
+    }
+  ],
   "confidence": 0.0,
   "unknowns": ["what remains unexplained"],
   "additional_context_needed": ["evidence that would disambiguate the remaining hypotheses"]
 }
 ```
+
+`source_changes` are applied automatically: `path` must be the exact
+existing file path from the context, `operation` is `replace`,
+`append`, or `create`, and `old_text` for `replace` must appear
+verbatim and exactly once — otherwise the change is refused.
 
 `confidence` is your estimate that the revised source closes the
 objdiff diff completely.
