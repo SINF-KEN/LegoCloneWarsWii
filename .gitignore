@@ -41,3 +41,6 @@ tools/ghidra/output/
 tools/ai_decomp/decomp.db
 tools/ai_decomp/decomp.db-*
 tools/ai_decomp/attempts/
+
+# AI attempt worktrees
+.worktrees/
