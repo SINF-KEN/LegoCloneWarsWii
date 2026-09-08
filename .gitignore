@@ -44,3 +44,6 @@ tools/ai_decomp/attempts/
 
 # AI attempt worktrees
 .worktrees/
+
+# benchmark generated output
+tools/ai_decomp/output/

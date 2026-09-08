@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "phase": "5.6",
+  "count": 10,
+  "selection": "frozen_deterministic",
+  "functions": [
+    {
+      "rank": 1,
+      "address": "801b1020",
+      "name": "NuFlip4__FPv",
+      "size": 32,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "small_leaf",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 2,
+      "address": "801b1050",
+      "name": "NuFileInit__F16NuFileDeviceType",
+      "size": 192,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "medium_function",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 3,
+      "address": "801c2818",
+      "name": "NuRandSeed__FUi",
+      "size": 8,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/numath.master/numath_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/numath.master/numath_Lump.cpp",
+      "archetype": "global_access",
+      "score": 127,
+      "evidence": {
+        "callers": 3,
+        "globals": 1,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 2
+      }
+    },
+    {
+      "rank": 4,
+      "address": "801b1f60",
+      "name": "FindHash__15NuFileDeviceDatCFP8NUDATHDRPCc",
+      "size": 264,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "1_2kb_function",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 5,
+      "address": "803ccc14",
+      "name": "SystemInit__13GameFrameworkFv",
+      "size": 5644,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/gameframework.master/gameframework_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/gameframework.master/gameframework_Lump.cpp",
+      "archetype": "complex_function",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 6,
+      "address": "801c2820",
+      "name": "NuRandGetSeed__Fv",
+      "size": 8,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/numath.master/numath_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/numath.master/numath_Lump.cpp",
+      "archetype": "global_access",
+      "score": 122,
+      "evidence": {
+        "callers": 2,
+        "globals": 1,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 2
+      }
+    },
+    {
+      "rank": 7,
+      "address": "801b1040",
+      "name": "NuFileSwapEndianOnRead__Fi",
+      "size": 16,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "small_leaf",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 8,
+      "address": "801b1110",
+      "name": "NuFileSetCurrentDirectory__FPc",
+      "size": 12,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "small_leaf",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 9,
+      "address": "801b1130",
+      "name": "NuFileOpenSize__Fi",
+      "size": 52,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "medium_function",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    },
+    {
+      "rank": 10,
+      "address": "801b1170",
+      "name": "NuFileOpenEx__FPCc12nufilemode_ei",
+      "size": 200,
+      "section": "text",
+      "status_at_selection": "unknown",
+      "unit": "main/nufile.master/nufile_Lump",
+      "unit_source": "/Users/computer/Decomp/LegoCloneWarsWii/src/nufile.master/nufile_Lump.cpp",
+      "archetype": "medium_function",
+      "score": 100,
+      "evidence": {
+        "callers": 0,
+        "globals": 0,
+        "strings": 0,
+        "indirect_calls": 0,
+        "type_evidence": 0,
+        "instructions": 0
+      }
+    }
+  ]
+}
