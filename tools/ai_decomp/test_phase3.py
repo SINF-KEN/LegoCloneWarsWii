@@ -369,11 +369,19 @@ def test_real_context():
 
 class FakeHandler(http.server.BaseHTTPRequestHandler):
     behavior = {"status": 200}
+    requests_seen = 0
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         self.rfile.read(length)
+        FakeHandler.requests_seen += 1
         status = self.behavior.get("status", 200)
+        if status == "flaky_429":
+            # fail the first two requests with 429, then succeed
+            if FakeHandler.requests_seen <= 2:
+                status = 429
+            else:
+                status = 200
         if status == 200:
             body = json.dumps({
                 "id": "chatcmpl-test123",
@@ -487,9 +495,21 @@ def test_llm(tmp):
         with open(log_path) as f:
             lines = f.readlines()
         check(len(lines) == 2, "both requests should be logged")
+
+        # bounded retry: 429 twice then success (backoff compressed)
+        handler.behavior["status"] = "flaky_429"
+        FakeHandler.requests_seen = 0
+        patient = llm.LLMClient(
+            api_key="k2", base_url="http://127.0.0.1:%d/v1" % port,
+            model="fake-model", log_path=log_path, max_retries=3,
+            retry_backoff=0.05)
+        good = patient.generate("retry me")
+        check(good.ok and good.usage is not None,
+              "retry should eventually succeed: %r" % good.error)
+        check(FakeHandler.requests_seen == 3,
+              "expected 3 attempts, saw %d" % FakeHandler.requests_seen)
     finally:
         server.shutdown()
-        server.server_thread_ok = True
         server.server_close()
 
 

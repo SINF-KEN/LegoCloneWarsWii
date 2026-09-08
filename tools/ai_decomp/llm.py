@@ -49,6 +49,9 @@ PROMPTS_DIR = os.path.join(HERE, "prompts")
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT = 600  # reasoning models can take minutes; LLM_TIMEOUT overrides
+DEFAULT_MAX_RETRIES = 3  # bounded retries for 429/5xx/disconnects
+RETRY_BACKOFF_SECONDS = 20.0  # exponential: 20, 40, 80...
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 PROMPT_TEMPLATE = "decompile_function"
 
@@ -100,7 +103,8 @@ class LLMClient:
     """Minimal OpenAI-compatible chat-completions client."""
 
     def __init__(self, api_key=None, base_url=None, model=None,
-                 timeout=None, log_path=REQUEST_LOG):
+                 timeout=None, log_path=REQUEST_LOG, max_retries=None,
+                 retry_backoff=None):
         self.api_key = api_key if api_key is not None \
             else os.environ.get("LLM_API_KEY")
         self.base_url = (base_url if base_url is not None
@@ -110,6 +114,12 @@ class LLMClient:
             else os.environ.get("LLM_MODEL")
         self.timeout = timeout if timeout is not None \
             else int(os.environ.get("LLM_TIMEOUT") or DEFAULT_TIMEOUT)
+        self.max_retries = max_retries if max_retries is not None \
+            else int(os.environ.get("LLM_MAX_RETRIES")
+                     or DEFAULT_MAX_RETRIES)
+        self.retry_backoff = retry_backoff if retry_backoff is not None \
+            else float(os.environ.get("LLM_RETRY_BACKOFF")
+                       or RETRY_BACKOFF_SECONDS)
         self.log_path = log_path
 
         missing = [name for name, value in (
@@ -152,37 +162,50 @@ class LLMClient:
             },
             method="POST")
 
-        started = time.time()
         response = LLMResponse(prompt=user_content, model=self.model,
                                timestamp=time.strftime(
                                    "%Y-%m-%dT%H:%M:%S%z"))
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) \
-                    as handle:
-                payload = json.loads(
-                    handle.read().decode("utf-8"))
-                request_id = handle.headers.get("x-request-id")
-            response.latency_seconds = round(time.time() - started, 3)
-            response.request_id = request_id
-            response.response = _extract_choice(payload)
-            response.usage = payload.get("usage")
-            try:
-                response.structured = parse_structured(response.response)
-            except LLMResponseError:
-                response.structured = None
-        except urllib.error.HTTPError as exc:
-            response.latency_seconds = round(time.time() - started, 3)
-            response.request_id = exc.headers.get("x-request-id") \
-                if exc.headers else None
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:2000]
-            except OSError:
-                detail = ""
-            response.error = "HTTP %s: %s" % (exc.code, detail)
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            response.latency_seconds = round(time.time() - started, 3)
-            response.error = "%s: %s" % (type(exc).__name__, exc)
+        attempts = self.max_retries + 1
+        started = time.time()
 
+        for attempt_no in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) \
+                        as handle:
+                    payload = json.loads(
+                        handle.read().decode("utf-8"))
+                    request_id = handle.headers.get("x-request-id")
+                response.latency_seconds = round(time.time() - started, 3)
+                response.request_id = request_id
+                response.response = _extract_choice(payload)
+                response.usage = payload.get("usage")
+                try:
+                    response.structured = parse_structured(
+                        response.response)
+                except LLMResponseError:
+                    response.structured = None
+                response.error = None
+                break
+            except urllib.error.HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", "replace")[:2000]
+                except OSError:
+                    detail = ""
+                response.request_id = exc.headers.get("x-request-id") \
+                    if exc.headers else None
+                response.error = "HTTP %s: %s" % (exc.code, detail)
+                if exc.code not in RETRYABLE_STATUS \
+                        or attempt_no >= attempts:
+                    break
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                response.error = "%s: %s" % (type(exc).__name__, exc)
+                if attempt_no >= attempts:
+                    break
+            # bounded exponential backoff before the next attempt
+            time.sleep(self.retry_backoff * (2 ** (attempt_no - 1)))
+
+        response.latency_seconds = response.latency_seconds or \
+            round(time.time() - started, 3)
         self._log(response)
         return response
 
