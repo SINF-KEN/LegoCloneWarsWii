@@ -212,7 +212,13 @@ class Orchestrator:
     def call_llm(self, prompt, unit_rel=None):
         if self.dry_run:
             return self.canned_response(prompt, unit_rel)
-        client = self.llm_client or llm_mod.LLMClient()
+        try:
+            client = self.llm_client or llm_mod.LLMClient()
+        except llm_mod.LLMConfigError as exc:
+            response = llm_mod.LLMResponse(prompt=prompt,
+                                           error=str(exc))
+            response.fatal = True
+            return response
         return client.generate(prompt)
 
     # ----------------------------------------------------------------
@@ -239,6 +245,7 @@ class Orchestrator:
                 "primary working tree is dirty; refusing to start "
                 "(use --allow-dirty to override)")
 
+        previous_status = fn["status"]
         self.establish_baseline()
         if not self.dry_run:
             db.set_status(self.conn, self.address, "in_progress")
@@ -260,13 +267,22 @@ class Orchestrator:
             self._write(attempt, "result.json",
                         json.dumps(result, indent=2, default=str))
             results.append(result)
+            if result.get("fatal"):
+                self.log("fatal error, aborting the loop: %s"
+                         % result.get("error"))
+                break
             final = result
             if result["classification"] in ("ok", "already_matched"):
                 break
             feedback = result.get("feedback")
 
+        # fatal aborts never produce a verdict: restore prior status
+        if final and final.get("fatal") and not self.dry_run:
+            db.set_status(self.conn, self.address, previous_status)
+            self.conn.commit()
+
         # final database status: only objective results count
-        if not self.dry_run:
+        elif not self.dry_run:
             if final and final["classification"] == "ok":
                 db.set_status(self.conn, self.address, "matched")
             elif final and final["classification"] == "matching":
@@ -467,6 +483,9 @@ def main(argv=None):
         allow_dirty=args.allow_dirty, skip_build=args.skip_build)
     try:
         outcome = orch.run()
+    except (RuntimeError, llm_mod.LLMConfigError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     finally:
         conn.close()
     print(json.dumps({"status": outcome["status"],
