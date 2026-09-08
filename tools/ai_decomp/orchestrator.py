@@ -282,20 +282,31 @@ class Orchestrator:
             self.log("new best candidate: attempt %d at %s%%"
                      % (attempt, target_pct))
 
-    def _best_mismatch(self):
+    def _best_mismatch(self, up_to_attempt):
+        """Most recent mismatch evidence available before this attempt.
+
+        Prefers the best attempt's evidence; falls back to the most
+        recent measured attempt (the best candidate may predate
+        mismatch capture).
+        """
+        candidates = []
         best_attempt = (self.best or {}).get("best_attempt")
-        if best_attempt is None:
-            return None
-        path = os.path.join(self.attempt_dir(best_attempt),
-                            "mismatch.json")
-        if not os.path.exists(path):
-            return None
-        try:
-            with open(path) as f:
-                evidence = json.load(f)
-            return evidence if isinstance(evidence, dict) else None
-        except (OSError, ValueError):
-            return None
+        if best_attempt is not None:
+            candidates.append(self.attempt_dir(best_attempt))
+        for a in range(up_to_attempt - 1, 0, -1):
+            candidates.append(self.attempt_dir(a))
+        for d in candidates:
+            path = os.path.join(d, "mismatch.json")
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path) as f:
+                    evidence = json.load(f)
+                if isinstance(evidence, dict):
+                    return evidence
+            except (OSError, ValueError):
+                continue
+        return None
 
     def _previous_attempt_summary(self):
         """Hypotheses/unknowns/classification of the best attempt."""
@@ -472,7 +483,7 @@ class Orchestrator:
         if self.best:
             prev = self._previous_attempt_summary()
             mismatch_block = ""
-            best_mismatch = self._best_mismatch()
+            best_mismatch = self._best_mismatch(attempt)
             if best_mismatch:
                 mismatch_block = (
                     "\n### Objective mismatch evidence\n"
