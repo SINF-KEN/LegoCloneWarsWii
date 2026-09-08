@@ -63,6 +63,7 @@ import context as context_mod  # noqa: E402
 import database as db  # noqa: E402
 import editor as editor_mod  # noqa: E402
 import llm as llm_mod  # noqa: E402
+import mismatch as mismatch_mod  # noqa: E402
 import objdiff as objdiff_mod  # noqa: E402
 from worktree import WorktreeError, WorktreeManager  # noqa: E402
 
@@ -281,6 +282,21 @@ class Orchestrator:
             self.log("new best candidate: attempt %d at %s%%"
                      % (attempt, target_pct))
 
+    def _best_mismatch(self):
+        best_attempt = (self.best or {}).get("best_attempt")
+        if best_attempt is None:
+            return None
+        path = os.path.join(self.attempt_dir(best_attempt),
+                            "mismatch.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                evidence = json.load(f)
+            return evidence if isinstance(evidence, dict) else None
+        except (OSError, ValueError):
+            return None
+
     def _previous_attempt_summary(self):
         """Hypotheses/unknowns/classification of the best attempt."""
         best_attempt = (self.best or {}).get("best_attempt")
@@ -455,19 +471,35 @@ class Orchestrator:
             (feedback or "")
         if self.best:
             prev = self._previous_attempt_summary()
+            mismatch_block = ""
+            best_mismatch = self._best_mismatch()
+            if best_mismatch:
+                mismatch_block = (
+                    "\n### Objective mismatch evidence\n"
+                    "Byte-level comparison of the extracted original "
+                    "object vs the built candidate object for %s. "
+                    "Prioritize: exact instruction mismatches, then "
+                    "instruction ordering, register, load/store, "
+                    "branch, immediate/address, call/return, and "
+                    "function-size differences.\n%s\n"
+                    % (self.symbol,
+                       mismatch_mod.render_mismatch_markdown(
+                           best_mismatch)))
             feedback_block += (
                 "\n\n## Current best verified candidate\n"
                 "The previous candidate below is the current best "
                 "verified candidate (target objdiff %s%%). **Improve it "
-                "rather than starting over.**\n"
+                "rather than starting over. Do not throw it away "
+                "unnecessarily.**\n"
                 "Its changes are ALREADY APPLIED to the file you are "
                 "editing: the current file content is the existing "
                 "source plus this patch. Craft `old_text` against that "
                 "combined content.\n"
                 "\n### Accumulated best patch\n"
-                "```diff\n%s\n```\n%s"
+                "```diff\n%s\n```\n%s%s"
                 % (self.best.get("target_match_percent"),
                    self.best.get("patch", "").strip(),
+                   mismatch_block,
                    prev))
         prompt = llm_mod.render_prompt(template, context_mod
                                        .render_markdown(ctx))
@@ -564,9 +596,15 @@ class Orchestrator:
                 result["classification"] = (
                     "timeout" if build_record["classification"] ==
                     "timeout" else "compile_error")
+                error_text = "\n".join(
+                    build_record["errors"][:15])[:4000]
+                warn_text = "\n".join(
+                    build_record["warnings"][:5])
                 result["feedback"] = (
                     "The previous attempt failed to compile:\n"
-                    + "\n".join(build_record["errors"][:30]))
+                    + error_text
+                    + ("\n\nCompiler warnings (context only):\n"
+                       + warn_text if warn_text else ""))
                 return result
 
             # 7. objdiff
@@ -575,6 +613,33 @@ class Orchestrator:
                 baseline_report=PRIMARY_BASELINE,
                 target_address=self.address)
             self._write(attempt, "objdiff.json", json.dumps(od, indent=2))
+
+            # objective mismatch evidence for the next attempt (5.2)
+            mismatch_evidence = None
+            if od.get("target") and od["target"].get("data_available"):
+                try:
+                    t_path, b_path = mismatch_mod.unit_object_paths(
+                        worktree_path, od["target"].get("unit"))
+                    mismatch_evidence = mismatch_mod.collect_mismatch(
+                        worktree_path, self.symbol,
+                        address=self.address,
+                        unit_name=od["target"].get("unit"),
+                        target_path=t_path, base_path=b_path,
+                        instruction_lines=ctx.get("assembly"))
+                    mismatch_evidence["match_percent"] = \
+                        od["target"].get("match_percent")
+                    self._write(attempt, "mismatch.json", json.dumps(
+                        mismatch_evidence, indent=2))
+                except (OSError, ValueError) as exc:
+                    mismatch_evidence = {
+                        "available": False,
+                        "reason": "mismatch extraction failed: %s" % exc,
+                    }
+                    self._write(attempt, "mismatch.json", json.dumps(
+                        mismatch_evidence, indent=2))
+            result["mismatch_available"] = bool(
+                mismatch_evidence and mismatch_evidence.get("available"))
+
             result["objdiff"] = {
                 "match_percent": (od["target"] or {}).get("match_percent"),
                 "fully_matched": (od["target"] or {}).get(

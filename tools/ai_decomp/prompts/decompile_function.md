@@ -25,7 +25,10 @@ machine code — a 100% binary match as judged by objdiff.**
    When assembly and your intuition disagree, trust the assembly and
    reverse-engineer the source shape that would produce it.
 4. **Ghidra decompilation** is evidence and a convenience — NOT ground
-   truth. Its types are frequently wrong (`undefined`, `undefined4`).
+   truth. If an "Objective mismatch evidence" section is present, a
+   previous candidate is the verified best: improve it rather than
+   starting over, and treat its differing bytes as the primary
+   signal. Its types are frequently wrong (`undefined`, `undefined4`).
 5. **m2c output** is a candidate translation — NOT ground truth. It may
    misrepresent virtual calls and jump tables.
 6. **Inferred types and struct layouts are hypotheses** unless directly

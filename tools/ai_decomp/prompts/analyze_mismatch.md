@@ -6,6 +6,31 @@ binary. The objdiff report shows the compiled output differs from the
 original — your job is to explain the difference and propose a minimal,
 targeted source change.
 
+## The previous candidate
+
+The previous candidate is the current **objectively verified best
+candidate** (its objdiff score is shown below). Do not throw it away
+unnecessarily — improve it rather than starting over. Its changes are
+already applied to the file you are editing.
+
+When the context contains an "Objective mismatch evidence" section, it
+is a byte-level comparison of the extracted original object against
+your built candidate. Prioritize differences in this order:
+
+1. exact instruction mismatch (expected vs actual word)
+2. instruction ordering
+3. register mismatch
+4. load/store mismatch
+5. branch mismatch
+6. immediate/address mismatch
+7. call/return mismatch
+8. function size mismatch
+9. aggregate byte mismatch
+
+Describe what the evidence shows; do not claim a semantic cause the
+bytes do not support. The `actual` side is raw hex — the pipeline does
+not disassemble your output for you.
+
 ## Evidence hierarchy
 
 1. **The original assembly is authoritative.** The compiled output must

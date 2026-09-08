@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import database as db  # noqa: E402
+import mismatch as mismatch_mod  # noqa: E402
 import orchestrator as orch_mod  # noqa: E402
 from worktree import WorktreeManager  # noqa: E402
 
@@ -488,10 +489,295 @@ def test_real_dry_run():
           in rc.stdout, "unexpected dry-run status")
 
 
+# ----------------------------------------------------------------
+# mismatch evidence (5.2)
+# ----------------------------------------------------------------
+
+def make_elf(path, symbols):
+    """Minimal ELF32 big-endian relocatable object: .text + .symtab +
+    .strtab + .shstrtab, with one FUNC symbol per entry."""
+    import struct
+
+    names = list(symbols.keys())
+    strtab = b"\0"
+    name_off = {}
+    for name in names:
+        name_off[name] = len(strtab)
+        strtab += name.encode() + b"\0"
+
+    text = bytearray()
+    entries = [struct.pack(">IIIBBH", 0, 0, 0, 0, 0, 0)]
+    for name in names:
+        code = symbols[name]
+        pad = (4 - len(text) % 4) % 4
+        text += b"\0" * pad
+        entries.append(struct.pack(">IIIBBH", name_off[name],
+                                   len(text), len(code), 0x12, 0, 1))
+        text += code
+    sym_entries = b"".join(entries)
+
+    shstrtab = b"\0.text\0.symtab\0.strtab\0.shstrtab\0"
+    n = lambda s: shstrtab.index(s.encode() + b"\0")
+
+    e_ehsize = 52
+    text_off = e_ehsize
+    symtab_off = text_off + len(text)
+    strtab_off = symtab_off + len(sym_entries)
+    shstr_off = strtab_off + len(strtab)
+    sh_off = (shstr_off + len(shstrtab) + 3) & ~3
+
+    out = bytearray()
+    out += b"\x7fELF" + bytes([1, 2, 1, 0, 0]) + b"\0" * 7
+    out += struct.pack(">HHIIIIIHHHHHH",
+                       1,        # e_type: REL
+                       17,       # e_machine: PPC
+                       1,        # e_version
+                       0,        # e_entry
+                       0,        # e_phoff
+                       sh_off,   # e_shoff
+                       0,        # e_flags
+                       e_ehsize, 0, 0, 40, 4, 3)
+    out += text
+    out += b"\0" * (symtab_off - len(out))
+    out += sym_entries
+    out += strtab
+    out += shstrtab
+    out += b"\0" * (sh_off - len(out))
+
+    def shdr(name, typ, off, size, link, entsize):
+        return struct.pack(">10I", n(name), typ, 0, 0, off, size,
+                           link, 0, 4, entsize)
+
+    # standard null section header first, so symbol st_shndx indexes
+    # line up with the ELF convention (real objects have one too)
+    out += b"\0" * 40
+    out += shdr(".text", 1, text_off, len(text), 0, 0)
+    out += shdr(".symtab", 2, symtab_off, len(sym_entries), 3, 16)
+    out += shdr(".strtab", 3, strtab_off, len(strtab), 0, 0)
+    out += shdr(".shstrtab", 3, shstr_off, len(shstrtab), 0, 0)
+    struct.pack_into(">I", out, 0x20, sh_off)
+    struct.pack_into(">H", out, 0x30, 5)
+    open(path, "wb").write(bytes(out))
+
+
+def test_mismatch_extraction(tmp):
+    print("== mismatch extraction ==")
+    target_o = os.path.join(tmp, "target.o")
+    base_o = os.path.join(tmp, "base.o")
+    expected = bytes.fromhex(
+        "3c808d7738c0000038840000") + b"\x00" * 4  # 3 words + pad word
+    actual = bytes.fromhex(
+        "3c6000003884000038c00000") + b"\x00" * 4
+    make_elf(target_o, {"Fn__Fv": expected})
+    make_elf(base_o, {"Fn__Fv": actual})
+
+    res = mismatch_mod.collect_mismatch(
+        tmp, "Fn__Fv", address="80000000",
+        target_path=target_o, base_path=base_o,
+        instruction_lines=["80000000: lis r7,-0x7f73",
+                           "80000004: addi r7,r7,0",
+                           "80000008: addi r4,0,0",
+                           "8000000c: blr"])
+    check(res["available"] is True, "mismatch should be available")
+    check(res["expected_size"] == 16 and res["actual_size"] == 16,
+          "sizes wrong")
+    check(res["differing_words"] == 3,
+          "expected 3 differing words, got %s" % res["differing_words"])
+    d0 = res["differences"][0]
+    check(d0["expected"] == "3c808d77" and d0["actual"] == "3c600000"
+          and d0["kind"] == "instruction"
+          and d0.get("expected_mnemonic") == "lis r7,-0x7f73",
+          "difference record wrong: %r" % d0)
+    md = mismatch_mod.render_mismatch_markdown(res)
+    check("3c808d77" in md and len(md) < 6200, "markdown render wrong")
+
+    # bounded output
+    many = mismatch_mod.collect_mismatch(
+        tmp, "Fn__Fv", target_path=target_o, base_path=base_o,
+        max_differences=2)
+    check(len(many["differences"]) == 2 and many["truncated"] is True,
+          "bounding wrong: %r" % many["differences"])
+
+    # unavailable: symbol missing from base object
+    res = mismatch_mod.collect_mismatch(
+        tmp, "Missing__Fv", target_path=target_o, base_path=base_o)
+    check(res["available"] is False and res["reason"],
+          "missing symbol should be unavailable with reason")
+
+    # malformed inputs do not crash
+    res = mismatch_mod.collect_mismatch(
+        tmp, "Fn__Fv", target_path=os.path.join(tmp, "nope.o"),
+        base_path=base_o)
+    check(res["available"] is False, "missing file should be unavailable")
+
+
+def test_mismatch_plumbing(tmp):
+    print("== mismatch plumbing into prompts ==")
+    real = (orch_mod.PRIMARY_BASELINE, orch_mod.context_mod.build_context,
+            orch_mod.objdiff_mod.evaluate, orch_mod.build_mod.run_build,
+            orch_mod.mismatch_mod.collect_mismatch)
+    try:
+        world = make_world(os.path.join(tmp, "m1"))
+        conn, repo, attempts = world["conn"], world["repo"], \
+            world["attempts"]
+
+        fake_mismatch = {
+            "target": "80200010", "symbol": "TargetFn",
+            "available": True, "match_percent": 73.333336,
+            "expected_size": 48, "actual_size": 44,
+            "size_matches": False, "differing_words": 2,
+            "differences": [
+                {"offset": 0, "kind": "instruction",
+                 "expected": "3c808d77", "actual": "3c600000",
+                 "expected_mnemonic": "lis r7,-0x7f73"},
+                {"offset": 44, "kind": "function_size",
+                 "expected": "48 bytes", "actual": "44 bytes"},
+            ],
+            "truncated": False,
+        }
+
+        def scripted_mismatch(worktree, symbol, address=None, **kw):
+            return dict(fake_mismatch)
+
+        orch, contents, _ = build_orch(
+            world,
+            client_script=[{"new_text": "// a1\n"},
+                           {"new_text": "// a2\n"}],
+            objdiff_results=[{"pct": 73.333336}, {"pct": 73.333336}],
+            max_attempts=2)
+        orch_mod.mismatch_mod.collect_mismatch = scripted_mismatch
+        try:
+            outcome = orch.run()
+        finally:
+            orch_mod.mismatch_mod.collect_mismatch = real[4]
+
+        # mismatch.json artifact recorded for the accepted best attempt
+        mpath = os.path.join(attempts, "80200010", "attempt-001",
+                             "mismatch.json")
+        check(os.path.exists(mpath), "mismatch.json artifact missing")
+        saved = json.load(open(mpath))
+        check(saved["available"] is True and
+              saved["differences"][0]["expected"] == "3c808d77",
+              "mismatch artifact wrong")
+
+        # next prompt contains: best score, patch (previous source),
+        # mismatch evidence, improve-not-restart instruction
+        prompt2 = open(os.path.join(attempts, "80200010",
+                                    "attempt-002",
+                                    "prompt.txt")).read()
+        check("73.333336" in prompt2, "best score missing from prompt")
+        check("// a1" in prompt2, "previous source/patch missing")
+        check("3c808d77" in prompt2 and "Objective mismatch evidence"
+              in prompt2, "mismatch evidence missing from prompt")
+        check("Improve it" in prompt2 and
+              "rather than starting over" in prompt2,
+              "improve-not-restart instruction missing")
+        # bounded: prompt stays well under the cap despite evidence
+        check(len(prompt2) < 40000, "prompt not bounded")
+
+        # equal percent -> attempt 2 not accepted as best
+        check(outcome["attempts"][1]["accepted_as_best"] is False,
+              "equal candidate must not replace best")
+        best = best_of(world)
+        check(best["best_attempt"] == 1, "best changed unexpectedly")
+
+        # compiler errors reach the NEXT attempt's prompt
+        world2 = make_world(os.path.join(tmp, "m2"))
+        conn2 = world2["conn"]
+        real_rb = orch_mod.build_mod.run_build
+        flips = {"n": 0}
+
+        def build_seq(wt, timeout=1, repo=None, build_cmd=("ninja",),
+                      **kw):
+            flips["n"] += 1
+            if flips["n"] == 2:  # attempt 2 fails to compile
+                return {"success": False,
+                        "classification": "compile_error",
+                        "errors": ["error: SYNTAX_ERROR_XYZ at "
+                                   "foo.cpp:1"],
+                        "warnings": ["warning: something"],
+                        "objects": [], "stdout": "", "stderr": "",
+                        "exit_code": 1, "duration_seconds": 0.1,
+                        "command": list(build_cmd),
+                        "timeout_seconds": timeout, "worktree": wt,
+                        "started": "-", "configure": None}
+            return {"success": True, "classification": "ok",
+                    "errors": [], "warnings": [], "objects": [],
+                    "stdout": "", "stderr": "", "exit_code": 0,
+                    "duration_seconds": 0.1,
+                    "command": list(build_cmd),
+                    "timeout_seconds": timeout, "worktree": wt,
+                    "started": "-", "configure": None}
+        orch, _, _ = build_orch(
+            world2,
+            client_script=[{"new_text": "// a1\n"},
+                           {"new_text": "// a2\n"},
+                           {"new_text": "// a3\n"}],
+            objdiff_results=[{"pct": 73.333336},
+                             {"pct": 73.333336},
+                             {"pct": 73.333336}],
+            max_attempts=3)
+        orch_mod.build_mod.run_build = build_seq
+        try:
+            outcome = orch.run()
+        finally:
+            orch_mod.build_mod.run_build = real_rb
+        check(outcome["attempts"][1]["classification"]
+              == "compile_error", "compile classification wrong")
+        # attempt 3's prompt (written before its build) must carry the
+        # compiler error, the warnings, the best score and the best
+        # candidate source
+        prompt3 = open(os.path.join(world2["attempts"], "80200010",
+                                    "attempt-003",
+                                    "prompt.txt")).read()
+        check("SYNTAX_ERROR_XYZ" in prompt3,
+              "compiler error missing from retry prompt")
+        check("warning: something" in prompt3,
+              "compiler warning missing from retry prompt")
+        check("73.333336" in prompt3,
+              "best score missing from compile-error retry prompt")
+        check("// a1" in prompt3,
+              "previous source missing from compile-error retry prompt")
+        check(conn.execute(
+            "SELECT status FROM functions WHERE address='80200010'"
+        ).fetchone()[0] == "matching",
+            "verified best should keep status matching")
+        conn.close()
+        conn.close()
+    finally:
+        orch_mod.PRIMARY_BASELINE = real[0]
+        orch_mod.context_mod.build_context = GENUINE_BUILD_CONTEXT
+        orch_mod.objdiff_mod.evaluate = GENUINE_EVALUATE
+        orch_mod.build_mod.run_build = GENUINE_RUN_BUILD
+        orch_mod.mismatch_mod.collect_mismatch = real[4]
+
+
+def test_no_game_data_in_prompts(tmp):
+    print("== no raw game data in context ==")
+    world = make_world(os.path.join(tmp, "m3"))
+    conn = world["conn"]
+    orch, _, _ = build_orch(
+        world, client_script=[{"new_text": "// a1\n"}],
+        objdiff_results=[{"pct": 73.333336}], max_attempts=1)
+    outcome = orch.run()
+    prompt = open(os.path.join(world["attempts"], "80200010",
+                               "attempt-001", "prompt.txt")).read()
+    for marker in ("main.dol", "game.rvz", "orig/", "SC4P64/sys"):
+        check(marker not in prompt,
+              "raw game reference %r leaked into prompt" % marker)
+    check(conn.execute(
+        "SELECT status FROM functions WHERE address='80200010'"
+    ).fetchone()[0] == "matching", "status should be matching")
+    conn.close()
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="decomp_phase5_test_")
     try:
+        test_mismatch_extraction(tmp)
         test_retry_continuity(tmp)
+        test_mismatch_plumbing(tmp)
+        test_no_game_data_in_prompts(tmp)
         test_real_dry_run()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

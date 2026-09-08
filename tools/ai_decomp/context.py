@@ -162,7 +162,7 @@ def find_headers(name, max_headers=MAX_HEADERS,
 def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
                   depth=DEFAULT_DEPTH, run_m2c=True,
                   output_dir=OUTPUT_DIR, src_root=SRC_DIR,
-                  include_dir=INCLUDE_DIR):
+                  include_dir=INCLUDE_DIR, mismatch=None):
     """Assemble the context package for one function."""
     address = db.normalize_address(address)
     own_conn = conn is None
@@ -334,6 +334,7 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
             "truncated": source_truncated,
         },
         "headers": headers,
+        "mismatch": mismatch,
         "m2c": None,
         "match_info": match_info,
         "evidence": evidence,
@@ -370,6 +371,14 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
 # ----------------------------------------------------------------
 # Markdown rendering
 # ----------------------------------------------------------------
+
+def _render_mismatch_lines(mismatch):
+    import json as _json
+    text = _json.dumps(mismatch, indent=2)
+    if len(text) > 6000:
+        text = text[:6000] + "\n/* ...truncated... */"
+    return "```json\n" + text + "\n```"
+
 
 def render_markdown(ctx):
     f = ctx["function"]
@@ -462,6 +471,12 @@ def render_markdown(ctx):
             lines.append("- `%s` %s%s" % (
                 i["instruction_address"], i["target"] or "?",
                 " — " + virtual["pattern"] if virtual else ""))
+
+    if ctx.get("mismatch"):
+        lines.append("")
+        lines.append("## Objective mismatch evidence "
+                     "(extracted original .o vs built candidate .o)")
+        lines.append(_render_mismatch_lines(ctx["mismatch"]))
 
     if ctx["m2c"]:
         lines.append("")
