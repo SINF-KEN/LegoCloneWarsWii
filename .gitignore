@@ -36,3 +36,7 @@ compile_commands.json
 
 # Generated Ghidra analysis output
 tools/ghidra/output/
+
+# Local pipeline database
+tools/ai_decomp/decomp.db
+tools/ai_decomp/decomp.db-*
