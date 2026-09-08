@@ -500,7 +500,8 @@ def test_loop(tmp):
         world = make_loop_world(os.path.join(tmp, "w2"))
         conn, repo = world[0], world[1]
         orch = build_orchestrator(
-            *world, objdiff_behavior={"pct": 50.0, "full": False},
+            *world, objdiff_behavior=lambda n: {"pct": 50.0 + 10 * n,
+                                                "full": False},
             max_attempts=2)
         outcome = orch.run()
         check(len(outcome["attempts"]) == 2,
@@ -510,6 +511,13 @@ def test_loop(tmp):
               "improvement attempts should classify as matching")
         check(db.status_counts(conn).get("matching") == 1,
               "improvement should set matching status")
+        # 5.1: attempt 2 inherits and improves on attempt 1's best
+        best = json.load(open(os.path.join(world[4], "80200010",
+                                           "best.json")))
+        check(best["best_attempt"] == 2 and best["parent_attempt"] == 1,
+              "best lineage wrong: %r" % best)
+        check(best["target_match_percent"] == 60.0,
+              "best percent wrong: %r" % best["target_match_percent"])
         left = WorktreeManager(
             repo=repo,
             worktrees_dir=os.path.join(repo, ".worktrees")).list()

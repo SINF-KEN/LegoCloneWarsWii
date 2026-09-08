@@ -101,6 +101,7 @@ class Orchestrator:
         self.symbol = None
         self.unit_source_path = None
         self.baseline = None
+        self.best = None  # best objectively verified candidate so far
 
     # ----------------------------------------------------------------
     # recording
@@ -116,6 +117,52 @@ class Orchestrator:
         with open(path, "w") as f:
             f.write(content)
         return path
+
+    # ----------------------------------------------------------------
+    # best-candidate persistence (objective objdiff results only)
+    # ----------------------------------------------------------------
+
+    def best_json_path(self):
+        return os.path.join(self.attempts_root, self.address, "best.json")
+
+    def best_patch_path(self):
+        return os.path.join(self.attempts_root, self.address, "best.patch")
+
+    def load_best(self):
+        """Continue from a previously verified best candidate."""
+        path = self.best_json_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                best = json.load(f)
+            patch_file = self.best_patch_path()
+            if best.get("accepted") and os.path.exists(patch_file):
+                with open(patch_file) as f:
+                    best["patch"] = f.read()
+                self.best = best
+                self.log("continuing from verified best candidate: "
+                         "attempt %d at %s%%"
+                         % (best.get("best_attempt"),
+                            best.get("target_match_percent")))
+                return self.best
+        except (OSError, ValueError) as exc:
+            self.log("ignoring unreadable best.json: %s" % exc)
+        return None
+
+    def save_best(self, patch_text):
+        self.best["patch"] = patch_text
+        self.best["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        os.makedirs(os.path.dirname(self.best_json_path()), exist_ok=True)
+        with open(self.best_patch_path(), "w") as f:
+            f.write(patch_text)
+        meta = {k: v for k, v in self.best.items() if k != "patch"}
+        with open(self.best_json_path(), "w") as f:
+            json.dump(meta, f, indent=2)
+
+    def capture_best_patch(self, worktree_path, base_commit):
+        """Capture the accumulated candidate diff (objective state)."""
+        return self.worktrees.diff_against(worktree_path, base_commit)
 
     # ----------------------------------------------------------------
     # baseline
@@ -209,6 +256,64 @@ class Orchestrator:
             latency_seconds=0.0,
         )
 
+    def _accept_best(self, attempt, worktree_path, base_commit,
+                     target_pct, result):
+        """Record an objectively better candidate as the new best.
+
+        The accumulated worktree diff (best patch + this attempt's edit)
+        is captured from the disposable worktree; nothing is committed.
+        """
+        patch_text = self.capture_best_patch(worktree_path, base_commit)
+        self.best = {
+            "address": self.address,
+            "best_attempt": attempt,
+            "target_match_percent": target_pct,
+            "parent_attempt": result.get("parent_attempt"),
+            "base_commit": base_commit,
+            "base_branch": self.worktrees.base_branch,
+            "global_regression": False,
+            "accepted": True,
+            "captured": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "dry_run": self.dry_run,
+        }
+        if not self.dry_run:
+            self.save_best(patch_text)
+            self.log("new best candidate: attempt %d at %s%%"
+                     % (attempt, target_pct))
+
+    def _previous_attempt_summary(self):
+        """Hypotheses/unknowns/classification of the best attempt."""
+        best_attempt = (self.best or {}).get("best_attempt")
+        if best_attempt is None:
+            return ""
+        path = os.path.join(self.attempt_dir(best_attempt),
+                            "response.json")
+        lines = []
+        try:
+            with open(path) as f:
+                structured = (json.load(f) or {}).get("structured") or {}
+            for key in ("hypotheses", "unknowns",
+                        "additional_context_needed"):
+                if structured.get(key):
+                    lines.append("- %s: %s" % (
+                        key, "; ".join(map(str, structured[key]))))
+        except (OSError, ValueError):
+            pass
+        result_path = os.path.join(self.attempt_dir(best_attempt),
+                                   "result.json")
+        try:
+            with open(result_path) as f:
+                prev = json.load(f)
+            lines.append("- previous classification: %s"
+                         % prev.get("classification"))
+            if prev.get("objdiff"):
+                lines.append("- previous objdiff: %s"
+                             % json.dumps(prev["objdiff"]))
+        except (OSError, ValueError):
+            pass
+        return ("\n### Known hypotheses / unknowns from the best "
+                "attempt\n" + "\n".join(lines)) if lines else ""
+
     def call_llm(self, prompt, unit_rel=None):
         if self.dry_run:
             return self.canned_response(prompt, unit_rel)
@@ -247,6 +352,7 @@ class Orchestrator:
 
         previous_status = fn["status"]
         self.establish_baseline()
+        self.load_best()
         if not self.dry_run:
             db.set_status(self.conn, self.address, "in_progress")
         self.conn.commit()
@@ -254,7 +360,10 @@ class Orchestrator:
         results = []
         feedback = None
         final = None
-        for attempt in range(1, self.max_attempts + 1):
+        # attempt numbers continue from a loaded best candidate so
+        # lineage stays monotonic across orchestrator invocations
+        start = (self.best or {}).get("best_attempt") or 0
+        for attempt in range(start + 1, start + 1 + self.max_attempts):
             self.log("=== attempt %d/%d ===" % (attempt, self.max_attempts))
             try:
                 result = self.run_attempt(attempt, feedback)
@@ -266,6 +375,19 @@ class Orchestrator:
                           "error": str(exc)}
             self._write(attempt, "result.json",
                         json.dumps(result, indent=2, default=str))
+            self._write(attempt, "metadata.json", json.dumps({
+                "attempt_number": attempt,
+                "parent_attempt": result.get("parent_attempt"),
+                "base_commit": result.get("base_commit"),
+                "target_match_before": result.get("target_match_before"),
+                "target_match_after": result.get("target_match_after"),
+                "global_match_before": result.get("global_match_before"),
+                "global_match_after": result.get("global_match_after"),
+                "regression": result.get("regression"),
+                "accepted_as_best": result.get("accepted_as_best"),
+                "best_attempt_now": (self.best or {}).get("best_attempt"),
+                "classification": result.get("classification"),
+            }, indent=2, default=str))
             results.append(result)
             final = result
             if result.get("fatal"):
@@ -281,11 +403,15 @@ class Orchestrator:
             db.set_status(self.conn, self.address, previous_status)
             self.conn.commit()
 
-        # final database status: only objective results count
+        # final database status: only objective results count.
+        # matched requires objdiff fuzzy_match_percent == 100.0 (ok);
+        # a verified best candidate (any confirmed percent) is matching;
+        # everything else is blocked.
         elif not self.dry_run:
             if final and final["classification"] == "ok":
                 db.set_status(self.conn, self.address, "matched")
-            elif final and final["classification"] == "matching":
+            elif self.best and self.best.get("target_match_percent") \
+                    is not None:
                 db.set_status(self.conn, self.address, "matching")
             else:
                 db.set_status(self.conn, self.address, "blocked")
@@ -305,20 +431,44 @@ class Orchestrator:
             # this attempt's records
             shutil.rmtree(record_dir)
         os.makedirs(record_dir, exist_ok=True)
-        result = {"attempt": attempt, "classification": "unknown"}
+        result = {
+            "attempt": attempt,
+            "classification": "unknown",
+            "attempt_number": attempt,
+            "parent_attempt": (self.best or {}).get("best_attempt"),
+            "target_match_before": (self.best or {}).get(
+                "target_match_percent"),
+        }
 
         # 1. context
         ctx = context_mod.build_context(self.address, conn=self.conn)
         self._write(attempt, "context.json", json.dumps(ctx, indent=2))
         self.unit_source_path = ctx["source"]["path"]
 
-        # 2. prompt (+ feedback from the previous attempt)
-        if feedback:
+        # 2. prompt (+ feedback from the previous attempt). When a best
+        # candidate exists, the model must improve it, not start over.
+        if feedback or self.best:
             template = llm_mod.load_prompt("analyze_mismatch")
-            feedback_block = "\n\n## Previous attempt feedback\n" + feedback
         else:
             template = llm_mod.load_prompt("decompile_function")
-            feedback_block = ""
+        feedback_block = "\n\n## Previous attempt feedback\n" + \
+            (feedback or "")
+        if self.best:
+            prev = self._previous_attempt_summary()
+            feedback_block += (
+                "\n\n## Current best verified candidate\n"
+                "The previous candidate below is the current best "
+                "verified candidate (target objdiff %s%%). **Improve it "
+                "rather than starting over.**\n"
+                "Its changes are ALREADY APPLIED to the file you are "
+                "editing: the current file content is the existing "
+                "source plus this patch. Craft `old_text` against that "
+                "combined content.\n"
+                "\n### Accumulated best patch\n"
+                "```diff\n%s\n```\n%s"
+                % (self.best.get("target_match_percent"),
+                   self.best.get("patch", "").strip(),
+                   prev))
         prompt = llm_mod.render_prompt(template, context_mod
                                        .render_markdown(ctx))
         prompt = prompt + feedback_block
@@ -367,6 +517,25 @@ class Orchestrator:
 
         try:
             worktree_path = worktree_info["path"]
+            base_commit = self.worktrees.head(worktree_path)
+            worktree_info["base_commit"] = base_commit
+            result["base_commit"] = base_commit
+            worktree_info["best_replayed"] = False
+
+            # retry continuity: rebuild the best verified candidate in
+            # this disposable worktree before applying new edits
+            if self.best and self.best.get("patch"):
+                try:
+                    editor_mod.apply_unified_diff(
+                        self.best["patch"], repo_root=worktree_path)
+                    worktree_info["best_replayed"] = True
+                except editor_mod.EditError as exc:
+                    result["classification"] = "best_replay_failed"
+                    result["error"] = (
+                        "best candidate patch no longer applies to %s: "
+                        "%s" % (base_commit, exc))
+                    result["fatal"] = True
+                    return result
             self._write(attempt, "worktree.json",
                         json.dumps(worktree_info, indent=2))
 
@@ -414,41 +583,84 @@ class Orchestrator:
                 "limitations": od["limitations"],
             }
 
-            # 8. classify — objective verdicts only
+            # 8. classify + best-candidate acceptance — objective
+            #    verdicts only (objdiff numbers, never LLM claims)
+            overall = od.get("overall") or {}
+            result["global_match_before"] = {
+                k: overall.get("from", {}).get(k)
+                for k in ("matched_code", "matched_functions")}
+            result["global_match_after"] = {
+                k: overall.get("to", {}).get(k)
+                for k in ("matched_code", "matched_functions")}
+            result["regression"] = bool(od.get("regressions"))
+            now_pct = (od.get("target") or {}).get("match_percent")
+            result["target_match_after"] = now_pct
+            best_pct = (self.best or {}).get("target_match_percent") \
+                if self.best else None
+
             if od["regressions"]:
                 result["classification"] = "objdiff_regression"
+                result["accepted_as_best"] = False
                 result["feedback"] = (
                     "The previous attempt regressed the global match:\n"
                     + "\n".join(od["regressions"])
                     + "\nIt was rejected; do not repeat that change.")
                 return result
+
             if od["target"] and od["target"]["fully_matched"]:
+                result["accepted_as_best"] = now_pct is not None and (
+                    best_pct is None or now_pct > best_pct)
+                if result["accepted_as_best"]:
+                    self._accept_best(attempt, worktree_path, base_commit,
+                                      now_pct, result)
                 result["classification"] = "ok"
                 result["note"] = ("objdiff confirms 100%% for %s"
                                   % self.symbol)
-                if not self.dry_run:
-                    result["database_status"] = "matched"
                 return result
 
-            baseline_pct = (self.baseline["target"] or {}).get(
-                "match_percent")
-            now_pct = (od["target"] or {}).get("match_percent")
-            improved = (now_pct is not None
-                        and (baseline_pct is None or now_pct > baseline_pct))
-            if improved:
+            # exact function-level data required to become the new best;
+            # unavailable data never replaces a verified best candidate
+            if now_pct is None:
+                result["classification"] = "objdiff_no_improvement"
+                result["accepted_as_best"] = False
+                result["feedback"] = (
+                    "The previous attempt compiled but objdiff has no "
+                    "match data for the target symbol (%s). A candidate "
+                    "without measurable target data cannot become the "
+                    "best candidate. objdiff: %s"
+                    % (self.symbol, json.dumps(result["objdiff"])))
+                return result
+
+            if best_pct is None or now_pct > best_pct:
+                result["accepted_as_best"] = True
+                self._accept_best(attempt, worktree_path, base_commit,
+                                  now_pct, result)
                 result["classification"] = "matching"
                 result["feedback"] = (
-                    "The previous attempt improved the target to %s%% "
-                    "but it is not fully matched yet. objdiff target "
-                    "data: %s\nKeep improving; the function must reach "
-                    "exactly 100%%." % (now_pct,
-                                        json.dumps(result["objdiff"])))
+                    "The previous attempt is the new best verified "
+                    "candidate: target objdiff improved to %s%% (was "
+                    "%s%%). It is not fully matched yet; it must reach "
+                    "exactly 100%%. objdiff: %s"
+                    % (now_pct, best_pct, json.dumps(result["objdiff"])))
+                return result
+
+            result["classification"] = "objdiff_no_improvement"
+            result["accepted_as_best"] = False
+            if now_pct < best_pct:
+                result["feedback"] = (
+                    "The previous attempt made the target WORSE "
+                    "(%s%% < best %s%%). It was rejected; the best "
+                    "candidate is preserved and its patch is already "
+                    "applied in your working file. Do not repeat that "
+                    "change. objdiff: %s"
+                    % (now_pct, best_pct, json.dumps(result["objdiff"])))
             else:
-                result["classification"] = "objdiff_no_improvement"
                 result["feedback"] = (
                     "The previous attempt compiled but did not improve "
-                    "the target function's match. objdiff target data: "
-                    + json.dumps(result["objdiff"]))
+                    "the target (equal to best %s%%); the best "
+                    "candidate is preserved and already applied. "
+                    "objdiff: %s"
+                    % (best_pct, json.dumps(result["objdiff"])))
             return result
         finally:
             # keep the worktree only when the function is fully matched
@@ -477,6 +689,9 @@ def main(argv=None):
                     help="start even if the primary tree is dirty")
     ap.add_argument("--build-timeout", type=int,
                     default=build_mod.DEFAULT_TIMEOUT)
+    ap.add_argument("--attempts-root", default=ATTEMPTS_ROOT,
+                    help="attempt records directory (default: "
+                         "tools/ai_decomp/attempts)")
     ap.add_argument("--skip-build", action="store_true",
                     help=argparse.SUPPRESS)  # test hook
     args = ap.parse_args(argv)
@@ -486,7 +701,8 @@ def main(argv=None):
         args.address, conn, max_attempts=args.max_attempts,
         build_timeout=args.build_timeout, dry_run=args.dry_run,
         dry_run_build=args.dry_run_build,
-        allow_dirty=args.allow_dirty, skip_build=args.skip_build)
+        allow_dirty=args.allow_dirty, skip_build=args.skip_build,
+        attempts_root=args.attempts_root)
     try:
         outcome = orch.run()
     except (RuntimeError, llm_mod.LLMConfigError) as exc:
@@ -502,8 +718,14 @@ def main(argv=None):
                                     "error", "confidence",
                                     "objdiff")} for r in
                           outcome["attempts"]]}, indent=2))
-    return 0 if outcome["status"] in ("ok", "dry_run",
-                                      "already_matched") else 1
+    if outcome["status"] in ("ok", "dry_run", "already_matched"):
+        return 0
+    if args.dry_run:
+        # a completed dry-run is a successful validation even when the
+        # measured classification is not an improvement
+        return 0 if outcome["status"] not in (
+            "internal_error", "best_replay_failed") else 1
+    return 1
 
 
 if __name__ == "__main__":

@@ -160,6 +160,18 @@ class WorktreeManager:
         return {"removed": path, "branch_deleted": deleted_branch,
                 "branch": branch}
 
+    def head(self, path):
+        """Commit a worktree's branch currently points at (read-only)."""
+        return _git(path, "rev-parse", "HEAD").stdout.strip()
+
+    def diff_against(self, path, base_commit):
+        """Full diff of a worktree's working tree vs a base commit.
+
+        Read-only; used to capture the accumulated best-candidate patch
+        without keeping worktrees or branches alive.
+        """
+        return _git(path, "diff", base_commit).stdout
+
     def list(self):
         out = []
         if not os.path.isdir(self.worktrees_dir):
