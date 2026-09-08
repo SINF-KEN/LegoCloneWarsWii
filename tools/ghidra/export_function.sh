@@ -16,3 +16,8 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 21)
     -noanalysis \
     -postScript ExportFunctionContext.java "$1" \
     -scriptPath "$HOME/Decomp/LegoCloneWarsWii/tools/ghidra"
+
+# Post-process with the PowerPC semantic analyzer (derived facts)
+python3 "$HOME/Decomp/LegoCloneWarsWii/tools/ai_decomp/ppc_analyzer.py" \
+    "$HOME/Decomp/LegoCloneWarsWii/tools/ghidra/output/function_$1.json" \
+    --write
