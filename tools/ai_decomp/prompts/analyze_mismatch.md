@@ -64,6 +64,20 @@ it is not authoritative. Prefer a simpler source construct when the
 inferred type is uncertain; if evidence conflicts, state the
 uncertainty instead of forcing a type.
 
+## Related functions
+
+"Related functions" (when present) are selected by deterministic
+relevance scoring: higher-ranked items share stronger structural or
+dependency evidence with the target (direct calls, shared globals,
+shared virtual slots or strings). They are useful references for
+inferring compiler and source idioms, but their source code is not
+authoritative for the target:
+
+- do not copy unrelated implementations;
+- do not assume shared globals imply shared types;
+- do not assume shared virtual slots imply identical classes;
+- resolve conflicts using the target assembly.
+
 ## Hard prohibitions
 
 - Do not invent APIs or symbols not present in the context.

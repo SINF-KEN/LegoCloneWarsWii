@@ -60,6 +60,7 @@ sys.path.insert(0, HERE)
 
 import build as build_mod  # noqa: E402
 import context as context_mod  # noqa: E402
+import context_rank as context_rank_mod  # noqa: E402
 import database as db  # noqa: E402
 import editor as editor_mod  # noqa: E402
 import idioms as idioms_mod  # noqa: E402
@@ -469,9 +470,15 @@ class Orchestrator:
                 "target_match_percent"),
         }
 
-        # 1. context (+ relevant known idioms retrieved against the
-        #    target's actual assembly and the m2c candidate source)
-        ctx = context_mod.build_context(self.address, conn=self.conn)
+        # 1. context (+ ranked related functions; + relevant known
+        #    idioms retrieved against the target's actual assembly and
+        #    the m2c candidate source)
+        ranked = context_rank_mod.build_ranked_context(
+            self.conn, self.address,
+            max_items=context_mod.DEFAULT_MAX_RELATIONS,
+            max_chars=context_mod.DEFAULT_MAX_RELATED_CHARS)
+        ctx = context_mod.build_context(self.address, conn=self.conn,
+                                        ranked=ranked)
         relevant_idioms = idioms_mod.retrieve_relevant_idioms(
             self.conn, assembly_lines=ctx.get("assembly"),
             source_text=(ctx.get("m2c") or {}).get("candidate_c"),

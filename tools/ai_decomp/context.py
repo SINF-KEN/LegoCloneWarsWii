@@ -63,6 +63,10 @@ MAX_ASSEMBLY_LINES = 400
 MAX_HEADER_LINES = 80
 MAX_HEADERS = 2
 
+# 5.5 ranked-context budgets (defaults; overridden via context_rank)
+DEFAULT_MAX_RELATIONS = 20
+DEFAULT_MAX_RELATED_CHARS = 12000
+
 
 def load_json(path):
     with open(path) as f:
@@ -163,7 +167,7 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
                   depth=DEFAULT_DEPTH, run_m2c=True,
                   output_dir=OUTPUT_DIR, src_root=SRC_DIR,
                   include_dir=INCLUDE_DIR, mismatch=None, idioms=None,
-                  type_evidence=None):
+                  type_evidence=None, ranked=None):
     """Assemble the context package for one function."""
     address = db.normalize_address(address)
     own_conn = conn is None
@@ -220,6 +224,15 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
         [c["address"] for c in graph.direct_callers(address)])
     callees, callees_total = relations(
         [c["address"] for c in graph.direct_callees(address)])
+
+    # 5.5: when a ranked related-functions section is present, the raw
+    # caller/callee lists become compact summaries to avoid duplicating
+    # the same information twice in the context
+    if ranked is not None:
+        callers = [{"address": c["address"], "name": c["name"],
+                    "status": c["status"]} for c in callers[:6]]
+        callees = [{"address": c["address"], "name": c["name"],
+                    "status": c["status"]} for c in callees[:6]]
 
     callers_deep = graph.callers_up_to(address, depth)
     callees_deep = graph.callees_up_to(address, depth)
@@ -315,6 +328,8 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
         "callers_total": callers_total,
         "callees": callees,
         "callees_total": callees_total,
+        "related_functions": (ranked or {}).get("items", []),
+        "context_selection": (ranked or {}).get("selection"),
         "graph": {
             "depth_limit": depth,
             "callers_within_depth": len(callers_deep),
@@ -445,21 +460,56 @@ def render_markdown(ctx):
         lines.append(json.dumps(ctx["derived"], indent=2))
         lines.append("```")
 
-    lines.append("")
-    lines.append("## Callers (%d known%s)" % (
-        ctx["callers_total"],
-        ", showing %d" % len(ctx["callers"])
-        if len(ctx["callers"]) < ctx["callers_total"] else ""))
-    for c in ctx["callers"]:
-        lines.append("- `%s` %s — status %s%s" % (
-            c["address"], c["name"] or "?", c["status"],
-            " [matched]" if c["matched"] else ""))
-    lines.append("")
-    lines.append("## Callees (%d known)" % ctx["callees_total"])
-    for c in ctx["callees"]:
-        lines.append("- `%s` %s — status %s%s" % (
-            c["address"], c["name"] or "?", c["status"],
-            " [matched]" if c["matched"] else ""))
+    ranked_mode = bool(ctx.get("context_selection"))
+    if ranked_mode:
+        lines.append("")
+        lines.append("## Direct relations (%d callers, %d callees "
+                     "known — see ranked section below)"
+                     % (ctx["callers_total"], ctx["callees_total"]))
+        for c in ctx["callers"][:6]:
+            lines.append("- caller `%s` %s (%s)"
+                         % (c["address"], c["name"] or "?", c["status"]))
+        for c in ctx["callees"][:6]:
+            lines.append("- callee `%s` %s (%s)"
+                         % (c["address"], c["name"] or "?", c["status"]))
+    else:
+        lines.append("")
+        lines.append("## Callers (%d known%s)" % (
+            ctx["callers_total"],
+            ", showing %d" % len(ctx["callers"])
+            if len(ctx["callers"]) < ctx["callers_total"] else ""))
+        for c in ctx["callers"]:
+            lines.append("- `%s` %s — status %s%s" % (
+                c["address"], c["name"] or "?", c["status"],
+                " [matched]" if c["matched"] else ""))
+        lines.append("")
+        lines.append("## Callees (%d known)" % ctx["callees_total"])
+        for c in ctx["callees"]:
+            lines.append("- `%s` %s — status %s%s" % (
+                c["address"], c["name"] or "?", c["status"],
+                " [matched]" if c["matched"] else ""))
+
+    if ctx.get("related_functions"):
+        sel = ctx["context_selection"] or {}
+        lines.append("")
+        lines.append("## RELEVANT RELATED FUNCTIONS")
+        lines.append("(deterministic relevance ranking v%s: "
+                     "%d candidates considered, %d selected)"
+                     % (sel.get("ranking_version", 1),
+                        sel.get("candidates_considered", 0),
+                        sel.get("selected", 0)))
+        for item in ctx["related_functions"]:
+            lines.append("")
+            lines.append("%d. %s" % (item["rank"],
+                                     item.get("name") or "?"))
+            lines.append("   score: %d | category: %s"
+                         % (item["score"], item["primary_category"]))
+            lines.append("   address: `%s` | status: %s"
+                         % (item["address"], item.get("status") or "?"))
+            lines.append("   reason: %s" % item["reason"])
+            if item.get("evidence"):
+                lines.append("   evidence: %s"
+                             % "; ".join(item["evidence"]))
     g = ctx["graph"]
     lines.append("")
     lines.append("## Graph (depth limit %d)" % g["depth_limit"])
