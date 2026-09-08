@@ -62,6 +62,7 @@ import build as build_mod  # noqa: E402
 import context as context_mod  # noqa: E402
 import database as db  # noqa: E402
 import editor as editor_mod  # noqa: E402
+import idioms as idioms_mod  # noqa: E402
 import llm as llm_mod  # noqa: E402
 import mismatch as mismatch_mod  # noqa: E402
 import objdiff as objdiff_mod  # noqa: E402
@@ -467,8 +468,15 @@ class Orchestrator:
                 "target_match_percent"),
         }
 
-        # 1. context
+        # 1. context (+ relevant known idioms retrieved against the
+        #    target's actual assembly and the m2c candidate source)
         ctx = context_mod.build_context(self.address, conn=self.conn)
+        relevant_idioms = idioms_mod.retrieve_relevant_idioms(
+            self.conn, assembly_lines=ctx.get("assembly"),
+            source_text=(ctx.get("m2c") or {}).get("candidate_c"),
+            limit=idioms_mod.DEFAULT_RETRIEVE_LIMIT)
+        ctx["idioms"] = relevant_idioms
+        idioms_block = idioms_mod.render_idioms_markdown(relevant_idioms)
         self._write(attempt, "context.json", json.dumps(ctx, indent=2))
         self.unit_source_path = ctx["source"]["path"]
 
@@ -515,6 +523,8 @@ class Orchestrator:
         prompt = llm_mod.render_prompt(template, context_mod
                                        .render_markdown(ctx))
         prompt = prompt + feedback_block
+        if idioms_block:
+            prompt += "\n\n" + idioms_block + "\n"
         self._write(attempt, "prompt.txt", prompt)
 
         # 3. LLM
@@ -558,6 +568,10 @@ class Orchestrator:
             result["error"] = str(exc)
             return result
 
+        compiled_ok = False
+        now_pct = None
+        regressed = False
+        accepted_flag = None
         try:
             worktree_path = worktree_info["path"]
             base_commit = self.worktrees.head(worktree_path)
@@ -669,8 +683,10 @@ class Orchestrator:
                 k: overall.get("to", {}).get(k)
                 for k in ("matched_code", "matched_functions")}
             result["regression"] = bool(od.get("regressions"))
+            regressed = bool(od.get("regressions"))
             now_pct = (od.get("target") or {}).get("match_percent")
             result["target_match_after"] = now_pct
+            compiled_ok = True
             best_pct = (self.best or {}).get("target_match_percent") \
                 if self.best else None
 
@@ -686,6 +702,7 @@ class Orchestrator:
             if od["target"] and od["target"]["fully_matched"]:
                 result["accepted_as_best"] = now_pct is not None and (
                     best_pct is None or now_pct > best_pct)
+                accepted_flag = result["accepted_as_best"]
                 if result["accepted_as_best"]:
                     self._accept_best(attempt, worktree_path, base_commit,
                                       now_pct, result)
@@ -709,6 +726,7 @@ class Orchestrator:
 
             if best_pct is None or now_pct > best_pct:
                 result["accepted_as_best"] = True
+                accepted_flag = True
                 self._accept_best(attempt, worktree_path, base_commit,
                                   now_pct, result)
                 result["classification"] = "matching"
@@ -739,6 +757,29 @@ class Orchestrator:
                     % (best_pct, json.dumps(result["objdiff"])))
             return result
         finally:
+            # 5.3: learn compiler idioms from real compiled+objdiff
+            # outcomes only (never from dry-runs or failed builds)
+            if compiled_ok and not self.dry_run and result.get("patch"):
+                try:
+                    learned = idioms_mod.learn_from_attempt(
+                        self.conn, address=self.address,
+                        function_name=self.symbol,
+                        attempt_number=attempt,
+                        source_text=result.get("patch") or "",
+                        assembly_lines=ctx.get("assembly") or [],
+                        objdiff_percent=now_pct,
+                        accepted_as_best=accepted_flag,
+                        regressed=regressed, compiled=True,
+                        improvement=(now_pct -
+                                     result.get("target_match_before"))
+                        if now_pct is not None and
+                        result.get("target_match_before") is not None
+                        else None)
+                    if learned:
+                        result["idioms_learned"] = len(learned)
+                except Exception as exc:  # learning must never break
+                    self.log("idiom learning failed: %s" % exc)
+
             # keep the worktree only when the function is fully matched
             # (for human review); everything else is cleaned up
             if result["classification"] != "ok" \

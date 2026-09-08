@@ -154,6 +154,47 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     source     TEXT,
     details    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS idioms (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                TEXT NOT NULL,
+    normalized_source   TEXT,
+    normalized_asm      TEXT,
+    compiler            TEXT NOT NULL DEFAULT 'MWCC',
+    architecture        TEXT NOT NULL DEFAULT 'PowerPC',
+    target              TEXT NOT NULL DEFAULT 'ppc-mwcc',
+    observation_count   INTEGER NOT NULL DEFAULT 0,
+    matched_count       INTEGER NOT NULL DEFAULT 0,
+    best_objdiff_score  REAL,
+    average_improvement REAL,
+    improvement_samples INTEGER NOT NULL DEFAULT 0,
+    last_seen           TEXT,
+    UNIQUE (kind, normalized_source, normalized_asm,
+            compiler, architecture)
+);
+CREATE INDEX IF NOT EXISTS idx_idioms_kind ON idioms(kind);
+CREATE INDEX IF NOT EXISTS idx_idioms_compiler ON idioms(compiler,
+                                                         architecture);
+
+CREATE TABLE IF NOT EXISTS idiom_observations (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    idiom_id          INTEGER NOT NULL REFERENCES idioms(id),
+    function_address  TEXT,
+    function_name     TEXT,
+    attempt_number    INTEGER,
+    compiler          TEXT,
+    source_excerpt    TEXT,
+    assembly_excerpt  TEXT,
+    objdiff_percent   REAL,
+    accepted_as_best  INTEGER,
+    evidence_level    TEXT NOT NULL,
+    note              TEXT,
+    created_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_idiom_obs_idiom
+    ON idiom_observations(idiom_id);
+CREATE INDEX IF NOT EXISTS idx_idiom_obs_function
+    ON idiom_observations(function_address);
 """
 
 
@@ -470,6 +511,106 @@ def functions_with_indirect_calls(conn):
     return conn.execute(
         "SELECT COUNT(DISTINCT function_address) AS n "
         "FROM indirect_calls").fetchone()["n"]
+
+
+def effective_idiom_level(observation_count, matched_count):
+    """Evidence level of an idiom derived from its observations.
+
+    matched  - at least one observation from an objdiff-verified 100%
+    repeated - observed in multiple independent compilations
+    observed - seen in exactly one real compilation
+    (a 'hypothesis' level exists but is only written explicitly; the
+    automatic learner never produces it, and 'rejected' marks are kept
+    per-observation without changing the idiom's level)
+    """
+    if matched_count:
+        return "matched"
+    if observation_count > 1:
+        return "repeated"
+    return "observed"
+
+
+def upsert_idiom(conn, kind, normalized_source=None, normalized_asm=None,
+                 compiler="MWCC", architecture="PowerPC",
+                 target="ppc-mwcc"):
+    """Return the idiom row id, creating it when new."""
+    conn.execute(
+        """INSERT OR IGNORE INTO idioms
+               (kind, normalized_source, normalized_asm, compiler,
+                architecture, target)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (kind, normalized_source, normalized_asm, compiler,
+         architecture, target))
+    row = conn.execute(
+        """SELECT id FROM idioms WHERE kind = ? AND
+               normalized_source IS ? AND normalized_asm IS ? AND
+               compiler = ? AND architecture = ?""",
+        (kind, normalized_source, normalized_asm, compiler,
+         architecture)).fetchone()
+    return row["id"]
+
+
+def add_idiom_observation(conn, idiom_id, function_address=None,
+                          function_name=None, attempt_number=None,
+                          source_excerpt=None, assembly_excerpt=None,
+                          objdiff_percent=None, accepted_as_best=None,
+                          evidence_level="observed", note=None,
+                          improvement=None):
+    """Record one real compile+objdiff observation of an idiom.
+
+    Duplicate observations (same idiom, function, attempt and level)
+    are ignored, so re-running an import never inflates counts.
+    """
+    import datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    cur = conn.execute(
+        """SELECT id FROM idiom_observations
+           WHERE idiom_id = ? AND function_address IS ?
+             AND attempt_number IS ? AND evidence_level = ?""",
+        (idiom_id, function_address, attempt_number, evidence_level))
+    if cur.fetchone() is not None:
+        return None
+
+    conn.execute(
+        """INSERT INTO idiom_observations
+               (idiom_id, function_address, function_name,
+                attempt_number, compiler, source_excerpt,
+                assembly_excerpt, objdiff_percent, accepted_as_best,
+                evidence_level, note, created_at)
+           SELECT id, ?, ?, ?, compiler, ?, ?, ?, ?, ?, ?, ?
+           FROM idioms WHERE id = ?""",
+        (function_address, function_name, attempt_number,
+         source_excerpt, assembly_excerpt, objdiff_percent,
+         int(bool(accepted_as_best)) if accepted_as_best is not None
+            else None,
+         evidence_level, note, now, idiom_id))
+
+    matched = evidence_level == "matched"
+    conn.execute(
+        """UPDATE idioms SET
+               observation_count = observation_count + 1,
+               matched_count = matched_count + ?,
+               best_objdiff_score = MAX(COALESCE(best_objdiff_score, ?),
+                                        ?),
+               average_improvement = CASE
+                   WHEN ? IS NULL THEN average_improvement
+                   ELSE ROUND((COALESCE(average_improvement, 0) *
+                               improvement_samples + ?) /
+                              (improvement_samples + 1), 4)
+               END,
+               improvement_samples = improvement_samples + CASE
+                   WHEN ? IS NULL THEN 0 ELSE 1 END,
+               last_seen = ?
+           WHERE id = ?""",
+        (1 if matched else 0, objdiff_percent, objdiff_percent,
+         improvement, improvement, improvement, now, idiom_id))
+    return conn.execute(
+        "SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_idiom(conn, idiom_id):
+    return dict(conn.execute(
+        "SELECT * FROM idioms WHERE id = ?", (idiom_id,)).fetchone())
 
 
 def total_counts(conn):

@@ -162,7 +162,7 @@ def find_headers(name, max_headers=MAX_HEADERS,
 def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
                   depth=DEFAULT_DEPTH, run_m2c=True,
                   output_dir=OUTPUT_DIR, src_root=SRC_DIR,
-                  include_dir=INCLUDE_DIR, mismatch=None):
+                  include_dir=INCLUDE_DIR, mismatch=None, idioms=None):
     """Assemble the context package for one function."""
     address = db.normalize_address(address)
     own_conn = conn is None
@@ -335,6 +335,7 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
         },
         "headers": headers,
         "mismatch": mismatch,
+        "idioms": idioms or [],
         "m2c": None,
         "match_info": match_info,
         "evidence": evidence,
@@ -371,6 +372,28 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
 # ----------------------------------------------------------------
 # Markdown rendering
 # ----------------------------------------------------------------
+
+def _render_idioms_lines(idioms):
+    lines = ["These are observed compiler patterns, not guarantees. "
+             "Use them as evidence, but verify against the target "
+             "assembly and objdiff.", ""]
+    for i, idi in enumerate(idioms, 1):
+        lines.append("%d. %s — level %s, observed in %d "
+                     "compilation(s), %d objdiff-verified 100%%"
+                     % (i, idi.get("kind"), idi.get("level"),
+                        idi.get("observation_count", 0),
+                        idi.get("matched_count", 0)))
+        if idi.get("normalized_source"):
+            lines.append("   source pattern: `%s`"
+                         % idi["normalized_source"])
+        if idi.get("normalized_asm"):
+            lines.append("   assembly pattern: `%s`"
+                         % idi["normalized_asm"])
+        if idi.get("best_objdiff_score") is not None:
+            lines.append("   best objdiff score seen: %s%%"
+                         % idi["best_objdiff_score"])
+    return "\n".join(lines)
+
 
 def _render_mismatch_lines(mismatch):
     import json as _json
@@ -477,6 +500,10 @@ def render_markdown(ctx):
         lines.append("## Objective mismatch evidence "
                      "(extracted original .o vs built candidate .o)")
         lines.append(_render_mismatch_lines(ctx["mismatch"]))
+
+    if ctx.get("idioms"):
+        lines.append("")
+        lines.append(_render_idioms_lines(ctx["idioms"]))
 
     if ctx["m2c"]:
         lines.append("")

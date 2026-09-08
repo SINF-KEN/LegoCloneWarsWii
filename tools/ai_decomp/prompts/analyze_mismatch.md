@@ -46,6 +46,14 @@ not disassemble your output for you.
 5. **m2c output is a candidate, not ground truth.**
 6. **Inferred types are hypotheses unless the accesses prove them.**
 
+## Known compiler idioms
+
+If the context contains a "Known MWCC compiler idioms" section, those
+are patterns previously observed in real compilations of this project,
+with their objdiff outcomes. Treat them as evidence for what MWCC
+tends to emit — never as guarantees or rules. Always verify a proposed
+construct against the target assembly and, ultimately, objdiff.
+
 ## Hard prohibitions
 
 - Do not invent APIs or symbols not present in the context.
