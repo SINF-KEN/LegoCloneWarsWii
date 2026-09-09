@@ -617,10 +617,17 @@ class Orchestrator:
             self._write(attempt, "worktree.json",
                         json.dumps(worktree_info, indent=2))
 
-            # 5. editor (dry-run never writes)
-            edit_result = editor_mod.apply_changes(
-                changes, repo_root=worktree_path,
-                dry_run=self.dry_run)
+            # 5. editor (dry-run never writes). A change the editor
+            # refuses (bad old_text, unrelated path) is a malformed
+            # candidate, not an internal error.
+            try:
+                edit_result = editor_mod.apply_changes(
+                    changes, repo_root=worktree_path,
+                    dry_run=self.dry_run)
+            except editor_mod.EditError as exc:
+                result["classification"] = "malformed_edit"
+                result["error"] = str(exc)
+                return result
             self._write(attempt, "patch.diff",
                         edit_result["patch"] or "(no changes)\n")
             result["patch"] = edit_result["patch"]
