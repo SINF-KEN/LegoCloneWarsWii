@@ -238,6 +238,42 @@ class ReportMathTests(unittest.TestCase):
         self.assertEqual(agg["reached_100"], 0)
         self.assertEqual(agg["total_attempts"], 4)
 
+    def test_compare_per_function_verdicts(self):
+        a = [{"address": "80000001", "name": "A", "best_match": 40.0,
+              "classification": "matching", "attempts": 1,
+              "build_success": True, "regressions": 0},
+             {"address": "80000002", "name": "B",
+              "classification": "compile_error", "attempts": 1,
+              "build_success": False, "regressions": 0},
+             {"address": "80000003", "name": "C", "best_match": 20.0,
+              "classification": "matching", "attempts": 1,
+              "build_success": True, "regressions": 0}]
+        b = [{"address": "80000001", "name": "A", "best_match": 100.0,
+              "classification": "ok", "attempts": 1,
+              "build_success": True, "reached_100": True,
+              "regressions": 0},
+             {"address": "80000002", "name": "B", "best_match": 55.0,
+              "classification": "matching", "attempts": 1,
+              "build_success": True, "regressions": 0},
+             {"address": "80000003", "name": "C",
+              "classification": "no_edits", "attempts": 1,
+              "build_success": False, "regressions": 0}]
+        rows = report_mod.per_function(a, b)
+        verdicts = {r["address"]: r["verdict"] for r in rows}
+        self.assertEqual(verdicts["80000001"], "b_better")
+        self.assertEqual(verdicts["80000002"], "b_better")
+        self.assertEqual(verdicts["80000003"], "b_worse")
+        summary = report_mod.summarize(a, b, rows)
+        self.assertEqual(summary["successful_builds"], {"a": 2, "b": 2})
+        self.assertEqual(summary["compile_success_rate"]["b"], 0.67)
+        self.assertEqual(summary["verdicts"]["b_better"], 2)
+        self.assertEqual(summary["verdicts"]["b_worse"], 1)
+
+    def test_compare_missing_evidence_safe(self):
+        rows = report_mod.per_function(
+            [], [{"address": "80000001", "name": "X"}])
+        self.assertEqual(rows[0]["verdict"], "both_unavailable")
+
     def test_report_formatting(self):
         results = [{"address": "801b16b0", "name": "NuFileRead__FiPvii",
                     "baseline": 73.33, "best": 85.0, "delta": 11.67,

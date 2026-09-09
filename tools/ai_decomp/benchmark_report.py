@@ -184,6 +184,17 @@ def load_results(path):
     return payload, {}
 
 
+def per_function(a_results, b_results):
+    """Re-exported from benchmark_compare for test convenience."""
+    import benchmark_compare as bc
+    return bc.per_function(a_results, b_results)
+
+
+def summarize(a_results, b_results, rows):
+    import benchmark_compare as bc
+    return bc.summarize(a_results, b_results, rows)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", default=DEFAULT_RESULTS)
