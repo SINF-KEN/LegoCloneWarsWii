@@ -121,6 +121,8 @@ class LLMClient:
             else float(os.environ.get("LLM_RETRY_BACKOFF")
                        or RETRY_BACKOFF_SECONDS)
         self.log_path = log_path
+        extra = os.environ.get("LLM_EXTRA_BODY")
+        self.extra_body = json.loads(extra) if extra else {}
 
         missing = [name for name, value in (
             ("LLM_API_KEY", self.api_key),
@@ -152,6 +154,8 @@ class LLMClient:
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
+        if self.extra_body:
+            body.update(self.extra_body)
 
         request = urllib.request.Request(
             self.base_url + "/chat/completions",
@@ -177,7 +181,21 @@ class LLMClient:
                     request_id = handle.headers.get("x-request-id")
                 response.latency_seconds = round(time.time() - started, 3)
                 response.request_id = request_id
-                response.response = _extract_choice(payload)
+                try:
+                    response.response = _extract_choice(payload)
+                except LLMResponseError as exc:
+                    # malformed/empty payload: retrying rarely helps;
+                    # record the outcome and stop
+                    response.latency_seconds = round(
+                        time.time() - started, 3)
+                    response.error = str(exc)
+                    response.usage = payload.get("usage")
+                    finish = (payload.get("choices") or [{}])[0] \
+                        .get("finish_reason") if payload.get("choices") \
+                        else None
+                    if finish:
+                        response.error += " (finish_reason=%s)" % finish
+                    break
                 response.usage = payload.get("usage")
                 try:
                     response.structured = parse_structured(
@@ -226,8 +244,18 @@ def _extract_choice(payload):
         content = message.get("content")
         if content is None and isinstance(message.get("tool_calls"), list):
             content = json.dumps(message["tool_calls"])
-        if content is None:
-            raise LLMResponseError("empty message content")
+        if content is None or not str(content).strip():
+            details = choice.get("finish_reason") or "unknown"
+            usage = payload.get("usage") or {}
+            reasoning = (usage.get("completion_tokens_details") or {}) \
+                .get("reasoning_tokens")
+            hint = ""
+            if reasoning:
+                hint = (" (model spent %s tokens on reasoning without "
+                        "producing content)" % reasoning)
+            raise LLMResponseError(
+                "empty message content, finish_reason=%s%s"
+                % (details, hint))
         return content
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMResponseError("unexpected API payload: %s" % exc)

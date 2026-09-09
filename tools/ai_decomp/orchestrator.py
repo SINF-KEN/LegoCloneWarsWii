@@ -354,7 +354,11 @@ class Orchestrator:
                                            error=str(exc))
             response.fatal = True
             return response
-        return client.generate(prompt)
+        try:
+            return client.generate(prompt)
+        except llm_mod.LLMResponseError as exc:
+            # response-shaped failures must not crash the loop
+            return llm_mod.LLMResponse(prompt=prompt, error=str(exc))
 
     # ----------------------------------------------------------------
     # the loop
