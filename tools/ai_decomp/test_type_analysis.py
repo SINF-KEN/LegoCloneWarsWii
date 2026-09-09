@@ -324,6 +324,9 @@ def test_integration(tmp):
                                           "80200010", "attempt-001",
                                           "context.json")))
         check(ctx.get("type_evidence"), "context lacks type evidence")
+        check(ctx["function"].get("cpp_name_hint") == "TargetFn",
+              "cpp_name_hint missing: %r"
+              % ctx["function"].get("cpp_name_hint"))
         prompt = open(os.path.join(world["attempts"], "80200010",
                                    "attempt-001",
                                    "prompt.txt")).read()

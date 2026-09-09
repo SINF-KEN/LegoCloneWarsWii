@@ -182,6 +182,14 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
         raise ValueError("function %s not in database" % address)
     fn = dict(fn)
 
+    # best-effort demangled base name for the source-level definition
+    base = (fn["name"] or "").split("__")[0] if fn["name"] else None
+    if base and base and base[0].isdigit():
+        base = None
+    cpp_hint = base if base and not base.startswith(("FUN_", "thunk_",
+                                                     "fcn_", "??")) \
+        else None
+
     # ---- raw exports: assembly, decompilation, derived facts ----
     raw = None
     raw_path = None
@@ -317,6 +325,7 @@ def build_context(address, conn=None, max_relations=DEFAULT_MAX_RELATIONS,
             "signature": fn["signature"] or (raw or {}).get("signature"),
             "return_type": fn["return_type"]
                 or (raw or {}).get("return_type"),
+            "cpp_name_hint": cpp_hint,
             "is_thunk": bool(fn["is_thunk"]),
             "is_external": bool(fn["is_external"]),
             "analyzed": bool(fn["analyzed"]) or raw is not None,

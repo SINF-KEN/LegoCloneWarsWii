@@ -60,6 +60,17 @@ authoritative for the target:
 - do not assume shared virtual slots imply identical classes;
 - resolve conflicts using the target assembly.
 
+## Function naming convention (critical for objdiff)
+
+The context reports the target's mangled symbol (e.g.
+`NuFileRead__FiPvii`) and, when recoverable, a `cpp_name_hint` (e.g.
+`NuFileRead`). Write your function using the DEMANGLED C++ signature —
+**never the mangled name as an identifier**. `void NuFlip4(void*)`
+compiles to symbol `NuFlip4__FPv`; writing `void NuFlip4__FPv(...)`
+double-mangles and objdiff can never pair it.
+
+## Hard prohibitions
+
 ## Hard prohibitions
 
 - Do not invent APIs, functions, or symbols that are not in the context.
